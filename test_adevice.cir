@@ -1,0 +1,6 @@
+* XSPICE A-device test - simple buffer
+A1 in out d_buffer
+VIN in 0 PULSE(0 5 0 1n 1n 0.5m 1m)
+R1 out 0 1k
+.tran 0.01m 2m
+.end
