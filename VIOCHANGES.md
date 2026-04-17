@@ -7,11 +7,12 @@ attribution remains in `AUTHORS`, `ChangeLog`, and `COPYING`.
 ## Summary
 
 VioMATRIXC is a fork of ngspice customized for the VioSpice software. The fork
-currently centers on three functional areas:
+currently centers on four functional areas:
 
 1. LTspice-oriented compatibility defaults and netlist preprocessing
 2. WAV-file-backed independent sources
-3. Build flows that default to the compatibility mode expected by VioSpice
+3. PWL-file-backed independent sources (native file loading)
+4. Build flows that default to the compatibility mode expected by VioSpice
 
 ## 1. LTspice Compatibility Mode
 
@@ -78,7 +79,33 @@ Capabilities documented from the implementation:
 * sample normalization
 * shared in-memory reuse of parsed WAV data
 
-## 4. Build Scripts Used By The Fork
+## 4. `pwlfile` Source Support
+
+This fork adds native `pwlfile` handling for independent voltage (`V`) and current (`I`) sources. This allows the simulator to load Piece-Wise Linear (PWL) data directly from an external text file instead of inlining large lists of points into the SPICE netlist.
+
+Relevant files:
+
+* `src/spicelib/devices/vsrc/vsrcpar.c`
+* `src/spicelib/devices/isrc/isrcpar.c`
+* `src/spicelib/devices/vsrc/vsrc.c`
+* `src/spicelib/devices/isrc/isrc.c`
+
+Usage:
+
+```spice
+V1 Net1 0 pwlfile="/path/to/waveform.pwl"
+I1 Net1 0 pwlfile="/path/to/current.pwl"
+```
+
+Capabilities and behavior:
+
+* **Native File Loading**: Points are read directly from the filesystem during the setup phase.
+* **Efficient Storage**: Large waveforms do not bloat the SPICE netlist or exceed line length limits.
+* **Automatic Mode Switch**: Setting `pwlfile` automatically configures the source to use the `PWL` transient function.
+* **Validation**: Performs time-monotonicity checks on loaded points, issuing warnings for non-increasing time values.
+* **Format**: Supports standard text files with `time value` pairs (space or tab separated).
+
+## 5. Build Scripts Used By The Fork
 
 The following scripts are the intended shortcuts for common Linux builds:
 

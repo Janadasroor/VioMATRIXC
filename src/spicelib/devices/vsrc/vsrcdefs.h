@@ -216,6 +216,7 @@ enum {
     VSRC_EXTERNAL,
     VSRC_WAVEFILE,
     VSRC_WAVECHAN,
+    VSRC_PWL_FILE,
 };
 
 /* model parameters */

@@ -29,16 +29,82 @@ static void copy_coeffs(VSRCinstance *here, IFvalue *value)
 }
 
 
+static double pwl_atof(const char *s, char **endptr) {
+    double val = strtod(s, endptr);
+    if (*endptr && **endptr != '\0' && !isspace_c(**endptr)) {
+        char suffix = tolower_c(**endptr);
+        double factor = 1.0;
+        switch (suffix) {
+            case 't': factor = 1e12; break;
+            case 'g': factor = 1e9; break;
+            case 'k': factor = 1e3; break;
+            case 'm': 
+                if (tolower_c((*endptr)[1]) == 'e' && tolower_c((*endptr)[2]) == 'g') {
+                    factor = 1e6; (*endptr) += 2;
+                } else {
+                    factor = 1e-3;
+                }
+                break;
+            case 'u': factor = 1e-6; break;
+            case 'n': factor = 1e-9; break;
+            case 'p': factor = 1e-12; break;
+            case 'f': factor = 1e-15; break;
+            case 'a': factor = 1e-18; break;
+        }
+        val *= factor;
+        (*endptr)++;
+    }
+    return val;
+}
+
+static int load_pwl_file(const char *filename, double **coeffs, int *count) {
+    FILE *fp = fopen(filename, "r");
+    if (!fp) {
+        fprintf(stderr, "Error: Could not open PWL file '%s'\n", filename);
+        return (E_NOTFOUND);
+    }
+    double *c = NULL;
+    int n = 0;
+    char line[1024];
+    while (fgets(line, sizeof(line), fp)) {
+        char *p = line;
+        char *end;
+        while (*p && isspace_c(*p)) p++;
+        if (!*p || *p == '*' || *p == ';' || *p == '#') continue;
+
+        double t = pwl_atof(p, &end);
+        if (p == end) continue;
+        p = end;
+        while (*p && (isspace_c(*p) || *p == ',')) p++;
+        
+        double v = pwl_atof(p, &end);
+        if (p == end) continue;
+
+        c = TREALLOC(double, c, n + 2);
+        c[n++] = t;
+        c[n++] = v;
+    }
+    fclose(fp);
+    if (n < 2) {
+        fprintf(stderr, "Error: PWL file '%s' is empty or invalid\n", filename);
+        if (c) tfree(c);
+        return (E_PARMVAL);
+    }
+    *coeffs = c;
+    *count = n;
+    return (OK);
+}
+
 /* ARGSUSED */
 int
 VSRCparam(int param, IFvalue *value, GENinstance *inst, IFvalue *select)
 {
     int i;
-    VSRCinstance *here = (VSRCinstance *) inst;
+    VSRCinstance *here = (VSRCinstance *)inst;
 
     NG_IGNORE(select);
 
-    switch (param) {
+    switch(param) {
         case VSRC_DC:
             here->VSRCdcValue = value->rValue;
             here->VSRCdcGiven = TRUE;
@@ -373,6 +439,28 @@ VSRCparam(int param, IFvalue *value, GENinstance *inst, IFvalue *select)
             here->VSRCwaveChan = value->iValue;
             here->VSRCwaveChanGiven = TRUE;
             break;
+
+        case VSRC_PWL_FILE: {
+            double *coeffs = NULL;
+            int count = 0;
+            int err = load_pwl_file(value->sValue, &coeffs, &count);
+            if (err != OK) return (err);
+
+            if (here->VSRCcoeffs) tfree(here->VSRCcoeffs);
+            here->VSRCcoeffs = coeffs;
+            here->VSRCfunctionOrder = count;
+            here->VSRCcoeffsGiven = TRUE;
+            here->VSRCfunctionType = PWL;
+            here->VSRCfuncTGiven = TRUE;
+
+            for (i=0; i<(here->VSRCfunctionOrder/2)-1; i++) {
+                  if (*(here->VSRCcoeffs+2*(i+1))<=*(here->VSRCcoeffs+2*i)) {
+                     fprintf(stderr, "Warning : voltage source %s has non-increasing PWL time points in file '%s'.\n", 
+                             here->VSRCname, value->sValue);
+                  }
+            }
+            break;
+        }
 
         default:
             return(E_BADPARM);

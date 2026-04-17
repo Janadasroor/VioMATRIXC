@@ -48,6 +48,7 @@ IFparm VSRCpTable[] = { /* parameters */
  OP  ("p",       VSRC_POWER,     IF_REAL,   "Instantaneous power"),
  IP  ("r",       VSRC_R,         IF_REAL,   "pwl repeat value"),
  IP  ("td",      VSRC_TD,        IF_REAL,   "pwl delay value"),
+ IP  ("pwlfile", VSRC_PWL_FILE,  IF_STRING, "pwl file description"),
  IP  ("distof1", VSRC_D_F1,      IF_REALVEC,"f1 input for distortion"),
  IP  ("distof2", VSRC_D_F2,      IF_REALVEC,"f2 input for distortion")
 };

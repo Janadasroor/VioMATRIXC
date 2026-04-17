@@ -139,6 +139,7 @@ enum {
     ISRC_EXTERNAL,
     ISRC_WAVEFILE,
     ISRC_WAVECHAN,
+    ISRC_PWL_FILE,
 };
 
 /* model parameters */

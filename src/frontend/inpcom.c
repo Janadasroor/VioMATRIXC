@@ -1785,6 +1785,7 @@ static struct inp_read_t inp_read(FILE* fp, int call_depth, const char* dir_name
 #endif
             /* no lower case letters for lines beginning with: */
             else if (!(ciprefix(".lib", buffer) || ciprefix(".inc", buffer) ||
+                strstr(buffer, "pwlfile=") || strstr(buffer, "PWLFILE=") ||
                 ((comfile || is_control) && (
                     ciprefix("write", buffer) ||
                     ciprefix("wrdata", buffer) ||
