@@ -1,0 +1,92 @@
+VioMATRIXC Build And Install Notes
+==================================
+
+This repository is a fork of ngspice customized for VioSpice. The build system
+is still the standard autotools/ngspice layout, but the preferred fork
+configuration uses `--enable-vicompat`.
+
+
+Requirements
+------------
+
+Minimum tools:
+
+* `gcc` or another C compiler
+* `make`
+* `autoconf`
+* `automake`
+* `libtool`
+* `bison`
+* `flex`
+
+For the console/X11 build you will also need the usual X11 and readline
+development packages used by ngspice.
+
+
+Recommended Linux Console Build
+-------------------------------
+
+    ./autogen.sh
+    mkdir -p release
+    cd release
+    ../configure --with-x --enable-cider --enable-vicompat
+    make -j"$(nproc)"
+
+This produces a console build with the VioSpice compatibility mode enabled by
+default.
+
+
+Recommended Linux Shared-Library Build
+--------------------------------------
+
+    ./autogen.sh
+    mkdir -p releasesh
+    cd releasesh
+    ../configure --with-ngshared --enable-cider --enable-vicompat
+    make -j"$(nproc)"
+
+Use this variant when embedding the simulator in VioSpice or another host
+application.
+
+
+Helper Scripts
+--------------
+
+The repository includes wrapper scripts for the two common fork workflows:
+
+* `compile_linux_vicompat.sh`
+* `compile_linux_shared_vicompat.sh`
+
+These scripts:
+
+* run `./autogen.sh`
+* create the build directory if needed
+* configure with `--enable-vicompat`
+* run `make clean`, `make`, and `make install`
+* save build logs in the build directory
+
+Review the install prefix inside the scripts before using them on a system
+where `/usr` or `/usr/local` is not appropriate.
+
+
+Fork-Specific Configure Flag
+----------------------------
+
+`--enable-vicompat` changes the default startup compatibility mode by setting:
+
+    set vicompat=lt
+
+in the generated `spinit` file.
+
+This is the main fork-specific build option and should be considered the
+default for VioSpice-oriented builds.
+
+
+License
+-------
+
+Keep the upstream legal and attribution files with any redistribution:
+
+* `COPYING`
+* `AUTHORS`
+* `ChangeLog`

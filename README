@@ -1,0 +1,94 @@
+VioMATRIXC
+==========
+
+VioMATRIXC is a VioSpice-oriented fork of ngspice. It keeps the ngspice
+simulation core, licensing, and upstream structure, while adding
+compatibility and integration work needed by the VioSpice software stack.
+
+This repository should be treated as:
+
+* ngspice upstream codebase
+* plus VioSpice-specific simulator behavior
+* plus fork-maintained build scripts and packaging defaults
+
+
+What This Fork Adds
+-------------------
+
+The main fork-specific changes currently documented in this tree are:
+
+* LTspice compatibility defaults through `--enable-vicompat`
+* automatic transformation of LTspice fixed-pin A-devices into ngspice/XSPICE
+  equivalents during netlist loading
+* `WAVEFILE` support for voltage and current sources for audio-driven transient
+  simulations
+* build scripts intended for VioSpice integration, including shared-library
+  builds with the compatibility mode enabled
+
+See `VIOCHANGES.md` for the fork delta relative to stock ngspice.
+
+
+Repository Layout
+-----------------
+
+Top-level directories and files most relevant to this fork:
+
+* `src/` simulator source code
+* `examples/` example circuits and feature demos
+* `tests/` regression and device tests
+* `visualc/` Visual Studio project files
+* `compile_linux_vicompat.sh` Linux executable build with VioSpice defaults
+* `compile_linux_shared_vicompat.sh` Linux shared-library build for embedding
+* `INSTALL` build and install notes for this fork
+* `COPYING` upstream license text that must remain with redistributions
+* `AUTHORS` and `ChangeLog` upstream project attribution/history
+
+
+Build Quick Start
+-----------------
+
+Console build on Linux:
+
+    ./autogen.sh
+    mkdir -p release
+    cd release
+    ../configure --with-x --enable-cider --enable-vicompat
+    make -j"$(nproc)"
+
+Shared-library build for VioSpice embedding:
+
+    ./autogen.sh
+    mkdir -p releasesh
+    cd releasesh
+    ../configure --with-ngshared --enable-cider --enable-vicompat
+    make -j"$(nproc)"
+
+The helper scripts `compile_linux_vicompat.sh` and
+`compile_linux_shared_vicompat.sh` wrap these workflows with default flags and
+optional install steps.
+
+
+Compatibility Default
+---------------------
+
+When configured with `--enable-vicompat`, the generated `spinit` sets:
+
+    set vicompat=lt
+
+This enables LTspice-oriented compatibility behavior by default in this fork.
+
+
+License And Attribution
+-----------------------
+
+VioMATRIXC remains derived from ngspice and keeps the upstream licensing and
+attribution files intact.
+
+Please retain these files in redistributions:
+
+* `COPYING`
+* `AUTHORS`
+* `ChangeLog`
+
+If you need full ngspice project information beyond this fork summary, consult
+the upstream project at https://ngspice.sourceforge.io/.

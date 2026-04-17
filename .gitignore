@@ -1,0 +1,30 @@
+# Local editor/OS noise
+.DS_Store
+*.swp
+*~
+.idea/
+.vscode/
+
+# Autotools/configure byproducts
+autom4te.cache/
+config.log
+config.status
+config.cache
+libtool
+
+# Common build outputs
+*.o
+*.lo
+*.la
+*.a
+*.so
+*.so.*
+*.dll
+*.dylib
+*.exe
+*.log
+
+# Local build trees used in this fork
+/release/
+/releasesh/
+/test_xspice_run/
