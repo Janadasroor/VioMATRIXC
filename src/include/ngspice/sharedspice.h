@@ -605,3 +605,14 @@ int ngSpice_Reset(void);
 #endif
 
 #endif
+
+/* VioSpice Native JIT Extension */
+#ifdef __cplusplus
+extern "C" {
+#endif
+typedef double (*viospice_jit_func_t)(double t, const double* inputs);
+IMPEXP void ngSpice_RegisterJitLogic(const char* block_id, viospice_jit_func_t func_ptr);
+IMPEXP viospice_jit_func_t viospice_jit_lookup(const char* block_id);
+#ifdef __cplusplus
+}
+#endif

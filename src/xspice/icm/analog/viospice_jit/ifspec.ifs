@@ -1,0 +1,28 @@
+/*
+ * XSPICE Interface Specification for VioMATRIXC JIT Smart Block
+ */
+
+NAME_TABLE:
+C_Function_Name:       cm_viospice_jit_block
+Spice_Model_Name:      viospice_jit
+Description:           "VioSpice Native JIT Compiled Smart Block"
+
+PORT_TABLE:
+Port_Name:             in                 out
+Description:           "input vector"     "output"
+Direction:             in                 out
+Default_Type:          v                  v
+Allowed_Types:         [v,vd,i,id]        [v,vd,i,id]
+Vector:                yes                no
+Vector_Bounds:         [1 -]              -
+Null_Allowed:          yes                no
+
+PARAMETER_TABLE:
+Parameter_Name:        jit_id
+Description:           "Unique JIT Block Identifier"
+Data_Type:             string
+Default_Value:         "default_block"
+Limits:                -
+Vector:                no
+Vector_Bounds:         -
+Null_Allowed:          yes

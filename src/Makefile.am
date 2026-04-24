@@ -499,7 +499,7 @@ EXTRA_DIST += spice.def
 if SHARED_MODULE
 lib_LTLIBRARIES = libngspice.la
 
-libngspice_la_SOURCES = \
+libngspice_la_SOURCES = viospice_bridge.c \
 	conf.c \
 	conf.h \
 	ngspice.c \

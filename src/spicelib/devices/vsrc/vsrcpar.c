@@ -422,17 +422,6 @@ VSRCparam(int param, IFvalue *value, GENinstance *inst, IFvalue *select)
             /* Attempt initial load */
             here->VSRCwavPtr = VSRCwavLoad(here->VSRCwaveFile);
 
-            /* If initial load fails, try some common casing patterns for Linux */
-            if (!here->VSRCwavPtr) {
-                char *tmp = strdup(here->VSRCwaveFile);
-                /* Try common Music/music variants */
-                if (strstr(tmp, "/music/")) {
-                    char *p = strstr(tmp, "/music/");
-                    p[1] = 'M';
-                    here->VSRCwavPtr = VSRCwavLoad(tmp);
-                }
-                free(tmp);
-            }
             break;
 
         case VSRC_WAVECHAN:

@@ -1824,3 +1824,12 @@ ft_find_analysis_parm(int which, char *name)
             return &(ft_sim->analyses[which]->analysisParms[i]);
     return NULL;
 }
+
+/* Dummy reporter for standalone ngspice CLI when shared library reporting is enabled */
+void ng_report_convergence(const char *analysis, int converged, const char *method,
+    double time, double delta, int iter, int maxiter, double abstol, const char *msg)
+{
+    /* No-op in CLI */
+    (void)analysis; (void)converged; (void)method; (void)time; (void)delta;
+    (void)iter; (void)maxiter; (void)abstol; (void)msg;
+}

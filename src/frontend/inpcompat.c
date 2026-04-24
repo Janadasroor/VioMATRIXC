@@ -105,10 +105,7 @@ void set_compat_mode(void)
     /* Auto-set 'a' flag when LTspice compat is enabled, since we always process complete netlists */
     if (newcompat.lt && !newcompat.a)
         newcompat.a = TRUE;
-    { FILE *dbg = fopen("/tmp/viospice_compat_debug.txt", "w");
-      fprintf(dbg, "[DEBUG] set_compat_mode: lt=%d a=%d isset=%d\n",
-                newcompat.lt, newcompat.a, newcompat.isset);
-      fclose(dbg); }
+
     if (newcompat.hs && newcompat.ps) {
         fprintf(stderr, "Warning: hs and ps compatibility are mutually exclusive, switch to ps!\n");
         newcompat.hs = FALSE;
@@ -2084,6 +2081,10 @@ static int ltspice_device_pin_count(const char *devtype)
     if (strcmp(upper, "JKFF") == 0 || strcmp(upper, "JK_FF") == 0) return 4; /* j, k, clk, q */
     if (strcmp(upper, "SRFF") == 0 || strcmp(upper, "SR_FF") == 0) return 4; /* s, r, q, nq */
     if (strcmp(upper, "DLATCH") == 0 || strcmp(upper, "D_LATCH") == 0) return 3; /* d, en, q */
+    if (strcmp(upper, "SRLATCH") == 0 || strcmp(upper, "SR_LATCH") == 0) return 3; /* s, r, q */
+    if (strcmp(upper, "TFF") == 0 || strcmp(upper, "T_FF") == 0) return 3; /* t, clk, q */
+    if (strcmp(upper, "TRISTATE") == 0) return 3; /* in, en, out */
+    if (strcmp(upper, "RAM") == 0) return 5; /* addr, data_in, clk, we, data_out */
 
     return 0; /* Unknown - no transformation */
 }
@@ -2194,8 +2195,10 @@ void ltspice_a_device_transform(struct card *oldcard)
             int tokcount = count_tokens_a(tmp);
             tfree(tmp);
 
-            /* LTspice format always has 10 tokens: Aname + 8 pins + DEVICETYPE */
-            if (tokcount != 10)
+            /* LTspice A-devices usually have 8 node pins + device type.
+             * Minimum tokens: instance_name + 8_pins + device_type = 10.
+             * We allow more for parameters (e.g. rise=1n). */
+            if (tokcount < 10)
                 continue;
 
             /* Parse the line */
@@ -2338,6 +2341,28 @@ void ltspice_a_device_transform(struct card *oldcard)
                 snprintf(model_name, sizeof(model_name), "a%s_%s", instname + 1, ngspice_type);
 
                 new_line = tprintf("%s %s %s", instname, node_str, model_name);
+
+                /* Special handling for specific devices */
+                if (strcmp(upper, "DLATCH") == 0 || strcmp(upper, "D_LATCH") == 0) {
+                    /* XSPICE d_dlatch: data enable set reset out Nout */
+                    new_line = tprintf("%s %s %s NULL NULL %s %s %s",
+                             instname, pins[0], pins[1], pins[6], pins[7], model_name);
+                }
+                else if (strcmp(upper, "SRLATCH") == 0 || strcmp(upper, "SR_LATCH") == 0) {
+                    /* XSPICE d_srlatch: s r set reset out Nout */
+                    new_line = tprintf("%s %s %s NULL NULL %s %s %s",
+                             instname, pins[0], pins[1], pins[6], pins[7], model_name);
+                }
+                else if (strcmp(upper, "TFF") == 0 || strcmp(upper, "T_FF") == 0) {
+                    /* XSPICE d_tff: t clk set reset out Nout */
+                    new_line = tprintf("%s %s %s NULL NULL %s %s %s",
+                             instname, pins[0], pins[1], pins[6], pins[7], model_name);
+                }
+                else if (strcmp(upper, "TRISTATE") == 0) {
+                    /* XSPICE d_tristate: in enable out */
+                    new_line = tprintf("%s %s %s %s %s",
+                             instname, pins[0], pins[1], pins[6], model_name);
+                }
 
                 /* Replace the original line */
                 tfree(card->line);

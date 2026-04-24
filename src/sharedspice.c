@@ -1110,27 +1110,6 @@ static measure_result_all last_measure_results = {0, NULL};
 
 /* Simple convergence report function for internal use in analysis code.
    This populates last_conv_info and forwards to the caller callback. */
-void
-ng_report_convergence(const char *analysis, int converged, const char *method,
-                      double ckt_time, double ckt_delta, int iterations,
-                      int max_iter, double residual, const char *detail)
-{
-    last_conv_info.analysis_name = (char*)analysis;
-    last_conv_info.converged = (converged == 0) ? TRUE : FALSE;
-    last_conv_info.iterations = iterations;
-    last_conv_info.max_iterations = max_iter;
-    last_conv_info.method_tried = (char*)method;
-    last_conv_info.method_succeeded = (converged == 0) ? TRUE : FALSE;
-    last_conv_info.ckt_time = ckt_time;
-    last_conv_info.ckt_delta = ckt_delta;
-    last_conv_info.residual_max = residual;
-    last_conv_info.error_code = converged;
-    last_conv_info.detail_message = (char*)detail;
-
-    if (convinfofcn) {
-        convinfofcn(&last_conv_info, ng_ident, userptr);
-    }
-}
 
 /* Convergence callback — may be called from spicelib analysis code.
    This is declared here and referenced extern from analysis modules. */

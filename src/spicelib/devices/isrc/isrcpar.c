@@ -335,16 +335,6 @@ ISRCparam(int param, IFvalue *value, GENinstance *inst, IFvalue *select)
             /* Attempt initial load */
             here->ISRCwavPtr = (VSRCwavData *)VSRCwavLoad(here->ISRCwaveFile);
 
-            /* Case-insensitive path fallback */
-            if (!here->ISRCwavPtr) {
-                char *tmp = strdup(here->ISRCwaveFile);
-                if (strstr(tmp, "/music/")) {
-                    char *p = strstr(tmp, "/music/");
-                    p[1] = 'M';
-                    here->ISRCwavPtr = (VSRCwavData *)VSRCwavLoad(tmp);
-                }
-                free(tmp);
-            }
             break;
 
         case ISRC_WAVECHAN:

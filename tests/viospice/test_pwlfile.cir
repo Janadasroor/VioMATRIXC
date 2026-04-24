@@ -1,0 +1,9 @@
+* PWL file test
+V1 n1 0 pwlfile="tests/viospice/test.pwl"
+R1 n1 0 1k
+.control
+tran 0.1m 5m
+print v(n1)
+quit
+.endc
+.end

@@ -293,8 +293,11 @@ am__DEPENDENCIES_2 = $(am__DEPENDENCIES_1) $(am__DEPENDENCIES_1) \
 @SHARED_MODULE_TRUE@	maths/sparse/libsparse.la misc/libmisc.la \
 @SHARED_MODULE_TRUE@	$(am__DEPENDENCIES_2) \
 @SHARED_MODULE_TRUE@	$(am__DEPENDENCIES_1) $(am__append_43)
-am__libngspice_la_SOURCES_DIST = conf.c conf.h ngspice.c sharedspice.c
-@SHARED_MODULE_TRUE@am_libngspice_la_OBJECTS = libngspice_la-conf.lo \
+am__libngspice_la_SOURCES_DIST = viospice_bridge.c conf.c conf.h \
+	ngspice.c sharedspice.c
+@SHARED_MODULE_TRUE@am_libngspice_la_OBJECTS =  \
+@SHARED_MODULE_TRUE@	libngspice_la-viospice_bridge.lo \
+@SHARED_MODULE_TRUE@	libngspice_la-conf.lo \
 @SHARED_MODULE_TRUE@	libngspice_la-ngspice.lo \
 @SHARED_MODULE_TRUE@	libngspice_la-sharedspice.lo
 libngspice_la_OBJECTS = $(am_libngspice_la_OBJECTS)
@@ -430,6 +433,7 @@ am__depfiles_remade = ./$(DEPDIR)/conf.Po \
 	./$(DEPDIR)/libngspice_la-conf.Plo \
 	./$(DEPDIR)/libngspice_la-ngspice.Plo \
 	./$(DEPDIR)/libngspice_la-sharedspice.Plo \
+	./$(DEPDIR)/libngspice_la-viospice_bridge.Plo \
 	./$(DEPDIR)/libspice_la-conf.Plo \
 	./$(DEPDIR)/libspice_la-main.Plo \
 	./$(DEPDIR)/libspice_la-ngspice.Plo \
@@ -875,7 +879,7 @@ MAINTAINERCLEANFILES = Makefile.in
 @TCL_MODULE_TRUE@	-e 's|%LIB_DIR%|$(libdir)|g' \
 @TCL_MODULE_TRUE@	-e 's|%VERSION%|$(TCLSPICE_VERSION)|g'
 
-@SHARED_MODULE_TRUE@libngspice_la_SOURCES = \
+@SHARED_MODULE_TRUE@libngspice_la_SOURCES = viospice_bridge.c \
 @SHARED_MODULE_TRUE@	conf.c \
 @SHARED_MODULE_TRUE@	conf.h \
 @SHARED_MODULE_TRUE@	ngspice.c \
@@ -1067,6 +1071,7 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libngspice_la-conf.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libngspice_la-ngspice.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libngspice_la-sharedspice.Plo@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libngspice_la-viospice_bridge.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libspice_la-conf.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libspice_la-main.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libspice_la-ngspice.Plo@am__quote@ # am--include-marker
@@ -1108,6 +1113,13 @@ am--depfiles: $(am__depfiles_remade)
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='$<' object='$@' libtool=yes @AMDEPBACKSLASH@
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
 @am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(LTCOMPILE) -c -o $@ $<
+
+libngspice_la-viospice_bridge.lo: viospice_bridge.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libngspice_la_CPPFLAGS) $(CPPFLAGS) $(libngspice_la_CFLAGS) $(CFLAGS) -MT libngspice_la-viospice_bridge.lo -MD -MP -MF $(DEPDIR)/libngspice_la-viospice_bridge.Tpo -c -o libngspice_la-viospice_bridge.lo `test -f 'viospice_bridge.c' || echo '$(srcdir)/'`viospice_bridge.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libngspice_la-viospice_bridge.Tpo $(DEPDIR)/libngspice_la-viospice_bridge.Plo
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='viospice_bridge.c' object='libngspice_la-viospice_bridge.lo' libtool=yes @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libngspice_la_CPPFLAGS) $(CPPFLAGS) $(libngspice_la_CFLAGS) $(CFLAGS) -c -o libngspice_la-viospice_bridge.lo `test -f 'viospice_bridge.c' || echo '$(srcdir)/'`viospice_bridge.c
 
 libngspice_la-conf.lo: conf.c
 @am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libngspice_la_CPPFLAGS) $(CPPFLAGS) $(libngspice_la_CFLAGS) $(CFLAGS) -MT libngspice_la-conf.lo -MD -MP -MF $(DEPDIR)/libngspice_la-conf.Tpo -c -o libngspice_la-conf.lo `test -f 'conf.c' || echo '$(srcdir)/'`conf.c
@@ -1505,6 +1517,7 @@ distclean: distclean-recursive
 	-rm -f ./$(DEPDIR)/libngspice_la-conf.Plo
 	-rm -f ./$(DEPDIR)/libngspice_la-ngspice.Plo
 	-rm -f ./$(DEPDIR)/libngspice_la-sharedspice.Plo
+	-rm -f ./$(DEPDIR)/libngspice_la-viospice_bridge.Plo
 	-rm -f ./$(DEPDIR)/libspice_la-conf.Plo
 	-rm -f ./$(DEPDIR)/libspice_la-main.Plo
 	-rm -f ./$(DEPDIR)/libspice_la-ngspice.Plo
@@ -1569,6 +1582,7 @@ maintainer-clean: maintainer-clean-recursive
 	-rm -f ./$(DEPDIR)/libngspice_la-conf.Plo
 	-rm -f ./$(DEPDIR)/libngspice_la-ngspice.Plo
 	-rm -f ./$(DEPDIR)/libngspice_la-sharedspice.Plo
+	-rm -f ./$(DEPDIR)/libngspice_la-viospice_bridge.Plo
 	-rm -f ./$(DEPDIR)/libspice_la-conf.Plo
 	-rm -f ./$(DEPDIR)/libspice_la-main.Plo
 	-rm -f ./$(DEPDIR)/libspice_la-ngspice.Plo

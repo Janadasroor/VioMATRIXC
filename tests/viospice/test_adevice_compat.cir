@@ -1,0 +1,22 @@
+* LTspice A-device compatibility test
+* This netlist uses LTspice-style 8-pin A-devices
+* VioMATRIXC should transform these to ngspice XSPICE models
+
+V1 n_in 0 PULSE(0 5 1m 1n 1n 1m 2m)
+
+* LTspice BUF: in=pin0, out=pin6, others=0
+A1 n_in 0 0 0 0 0 n_out_buf 0 BUF
+
+* LTspice AND: in1=pin0, in2=pin1, out=pin6
+A2 n_in n_in 0 0 0 0 n_out_and 0 AND
+
+* LTspice DFF: d=pin0, clk=pin1, q=pin6, nq=pin7
+A3 n_in n_in 0 0 0 0 n_q n_nq DFF
+
+.control
+set vicompat=lt
+tran 0.1m 5m
+print v(n_in) v(n_out_buf) v(n_out_and) v(n_q)
+quit
+.endc
+.end
