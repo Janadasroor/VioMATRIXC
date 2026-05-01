@@ -1,5 +1,0 @@
-Test LTSpice Compat
-B1 1 0 V=pwl(time, 0, 0, 1, 1)
-R1 1 0 1k
-.tran 0.1 1
-.end

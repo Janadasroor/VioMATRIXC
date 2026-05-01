@@ -15,7 +15,8 @@ EXTRA_DIST = FAQ autogen.sh Stuarts_Poly_Notes  \
 		compile_macos_clang.sh compile_macos_gcc.sh compile_macos_shared.sh \
 		compile_macos_clang_M2.sh compile_macos_clang_M2_shared.sh \
 		compile_linux_dist.sh ngspice.pc.in .gitignore \
-		README.md VIOCHANGES.md LICENSE
+		README.md VIOCHANGES.md
+
 
 
 MAINTAINERCLEANFILES = Makefile.in aclocal.m4 ar-lib compile config.guess \

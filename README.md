@@ -65,7 +65,8 @@ This enables LTspice-oriented compatibility behavior by default in this fork.
 VioMATRIXC remains derived from ngspice and keeps the upstream licensing and attribution files intact.
 
 Please retain these files in redistributions:
-* `COPYING` (License)
+* `COPYING` (Main License)
+
 * `AUTHORS`
 * `ChangeLog`
 
