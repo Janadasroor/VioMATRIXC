@@ -134,7 +134,18 @@ The following scripts are the intended shortcuts for common Linux builds:
 They both configure with `--enable-vicompat` and are the closest match to the
 expected VioSpice integration builds.
 
+## 8. Licensing Compliance (GPL Removal)
+
+To ensure that VioSpice (Apache 2.0) can link against VioMATRIXC without being "infected" by GPL requirements, the following changes have been made to this fork:
+
+* **Removal of XSpice Table Models**: The directory `src/xspice/icm/table/` and its contents (GPLv2+ licensed) have been physically removed from the repository.
+* **Build System Update**: `src/xspice/icm/GNUmakefile.in` has been modified to exclude the `table` module from the build process.
+* **Bridge Compatibility**: `ngSpice_IsPaused()` has been added to `src/viospice_bridge.c` to maintain API compatibility for VioSpice after engine stabilization.
+
+This transition ensures that the resulting `libngspice.so` shared library consists only of BSD, LGPL, and Public Domain components, making it legally compatible with permissive-licensed applications.
+
 ## Scope Boundary
+
 
 Unless stated here, the rest of the codebase should be assumed to follow normal
 ngspice behavior and upstream layout.

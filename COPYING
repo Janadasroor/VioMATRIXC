@@ -38,7 +38,8 @@ ngspice/src/xspice
 public domain
 except for
 ngspice/src/xspice/icm/table
-GPLv2 or newer
+[REMOVED IN THIS FORK FOR LICENSING COMPLIANCE]
+
 
 ngspice/src/frontend/numparam
 LGPLv2 or newer

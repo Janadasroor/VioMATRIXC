@@ -1,6 +1,19 @@
+/*
+ * VioSpice Bridge
+ *
+ * Copyright (c) 2026 Janadasroor Team
+ *
+ * This file is part of VioMATRIXC.
+ * VioMATRIXC is licensed under the Modified BSD License.
+ * See the COPYING file in the root directory for details.
+ */
+
 #include <stdlib.h>
+
 #include <string.h>
+#include <stdbool.h>
 #include <strings.h>
+
 
 typedef double (*viospice_jit_func_t)(double t, const double* inputs);
 
@@ -65,4 +78,10 @@ viospice_jit_func_t viospice_jit_lookup(const char* block_id) {
         current = current->next;
     }
     return NULL;
+}
+extern bool ft_intrpt;
+
+__attribute__((visibility("default")))
+bool ngSpice_IsPaused(void) {
+    return ft_intrpt;
 }
