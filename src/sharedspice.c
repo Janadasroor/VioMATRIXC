@@ -2371,10 +2371,13 @@ int sh_ExecutePerLoop(void)
 {
     struct dvec *d;
     int i, veclen;
-//  double testval;
     struct plot *pl = plot_cur;
-    /* return immediately if callback not wanted */
-    if (nodatawanted)
+
+    /* return immediately if structure not correctly initialized */
+    if (nodatawanted || !curvecvalsall || !curvecvalsall->vecsa)
+        return 2;
+
+    if (!pl || !pl->pl_dvecs)
         return 2;
 
     /* get the data of the last entry to the plot vector */
@@ -2382,23 +2385,40 @@ int sh_ExecutePerLoop(void)
     /* safeguard against vectors with 0 length (e.g. @c1[i] during ac simulation) */
     if (veclen < 0)
         return 2;
+
     curvecvalsall->vecindex = veclen;
-    for (d = pl->pl_dvecs, i = 0; d; d = d->v_next, i++) {
+
+    /* Loop through vectors, but DO NOT exceed the allocated buffer size (veccount) */
+    for (d = pl->pl_dvecs, i = 0; d && i < curvecvalsall->veccount; d = d->v_next, i++) {
+        if (!curvecvalsall->vecsa[i]) continue;
+
         /* test if real */
         if (d->v_flags & VF_REAL) {
             curvecvalsall->vecsa[i]->is_complex = FALSE;
-//          testval = d->v_realdata[veclen];
-            curvecvalsall->vecsa[i]->creal = d->v_realdata[veclen];
+            if (d->v_realdata) {
+                curvecvalsall->vecsa[i]->creal = d->v_realdata[veclen];
+            } else {
+                /* VioSpice Safety: Vector exists but data buffer is not yet allocated by ngspice */
+                curvecvalsall->vecsa[i]->creal = 0.0;
+            }
             curvecvalsall->vecsa[i]->cimag = 0.;
         }
         else {
             curvecvalsall->vecsa[i]->is_complex = TRUE;
-            curvecvalsall->vecsa[i]->creal = d->v_compdata[veclen].cx_real;
-            curvecvalsall->vecsa[i]->cimag = d->v_compdata[veclen].cx_imag;
+            if (d->v_compdata) {
+                curvecvalsall->vecsa[i]->creal = d->v_compdata[veclen].cx_real;
+                curvecvalsall->vecsa[i]->cimag = d->v_compdata[veclen].cx_imag;
+            } else {
+                curvecvalsall->vecsa[i]->creal = 0.0;
+                curvecvalsall->vecsa[i]->cimag = 0.0;
+            }
         }
     }
+
     /* now call the callback function to return the data to the caller */
-    datfcn(curvecvalsall, len, ng_ident, userptr);
+    if (datfcn) {
+        datfcn(curvecvalsall, curvecvalsall->veccount, ng_ident, userptr);
+    }
 
     return 0;
 }
@@ -2473,13 +2493,27 @@ int sh_vecinit(runDesc *run)
     curvecvalsall->veccount = veccount;
     curvecvalsall->vecsa = TMALLOC(pvecvalues, veccount);
 
-    for (i = 0, d = cur_run->runPlot->pl_dvecs; i < veccount; i++, d = d->v_next) {
-        curvecvalsall->vecsa[i] = TMALLOC(vecvalues,1);
-        curvecvalsall->vecsa[i]->name = d->v_name;
-        if (cieq(d->v_plot->pl_scale->v_name, d->v_name))
-            curvecvalsall->vecsa[i]->is_scale = TRUE;
-        else
-            curvecvalsall->vecsa[i]->is_scale = FALSE;
+    /* VioSpice Engine Patch: Ensure every slot is initialized to prevent garbage pointers */
+    printf("VioSpice Engine: Initializing data structures for %d vectors\n", veccount);
+    d = cur_run->runPlot->pl_dvecs;
+    for (i = 0; i < veccount; i++) {
+        curvecvalsall->vecsa[i] = TMALLOC(vecvalues, 1);
+        /* Safe default values */
+        curvecvalsall->vecsa[i]->name = NULL;
+        curvecvalsall->vecsa[i]->creal = 0.0;
+        curvecvalsall->vecsa[i]->cimag = 0.0;
+        curvecvalsall->vecsa[i]->is_scale = FALSE;
+        curvecvalsall->vecsa[i]->is_complex = FALSE;
+
+        if (d) {
+            curvecvalsall->vecsa[i]->name = d->v_name;
+            if (d->v_plot && d->v_plot->pl_scale && cieq(d->v_plot->pl_scale->v_name, d->v_name))
+                curvecvalsall->vecsa[i]->is_scale = TRUE;
+            d = d->v_next;
+        } else {
+            /* Vector exists in runDesc but not yet in the plot's linked list (common for @device[param]) */
+            curvecvalsall->vecsa[i]->name = "pending"; 
+        }
     }
     return 0;
 }
