@@ -2373,18 +2373,34 @@ int sh_ExecutePerLoop(void)
     int i, veclen;
     struct plot *pl = plot_cur;
 
-    /* return immediately if structure not correctly initialized */
-    if (nodatawanted || !curvecvalsall || !curvecvalsall->vecsa)
-        return 2;
+#ifdef THREADS
+    pthread_mutex_lock(&vecreallocMutex);
+#endif
 
-    if (!pl || !pl->pl_dvecs)
+    /* return immediately if structure not correctly initialized */
+    if (nodatawanted || !curvecvalsall || !curvecvalsall->vecsa) {
+#ifdef THREADS
+        pthread_mutex_unlock(&vecreallocMutex);
+#endif
         return 2;
+    }
+
+    if (!pl || !pl->pl_dvecs) {
+#ifdef THREADS
+        pthread_mutex_unlock(&vecreallocMutex);
+#endif
+        return 2;
+    }
 
     /* get the data of the last entry to the plot vector */
     veclen = pl->pl_dvecs->v_length - 1;
     /* safeguard against vectors with 0 length (e.g. @c1[i] during ac simulation) */
-    if (veclen < 0)
+    if (veclen < 0) {
+#ifdef THREADS
+        pthread_mutex_unlock(&vecreallocMutex);
+#endif
         return 2;
+    }
 
     curvecvalsall->vecindex = veclen;
 
@@ -2409,6 +2425,7 @@ int sh_ExecutePerLoop(void)
                 curvecvalsall->vecsa[i]->creal = d->v_compdata[veclen].cx_real;
                 curvecvalsall->vecsa[i]->cimag = d->v_compdata[veclen].cx_imag;
             } else {
+                /* VioSpice Safety: Complex buffer not yet allocated */
                 curvecvalsall->vecsa[i]->creal = 0.0;
                 curvecvalsall->vecsa[i]->cimag = 0.0;
             }
@@ -2419,6 +2436,10 @@ int sh_ExecutePerLoop(void)
     if (datfcn) {
         datfcn(curvecvalsall, curvecvalsall->veccount, ng_ident, userptr);
     }
+
+#ifdef THREADS
+    pthread_mutex_unlock(&vecreallocMutex);
+#endif
 
     return 0;
 }
@@ -2481,6 +2502,10 @@ int sh_vecinit(runDesc *run)
 
     /* generate the data tranfer structure,
        data will be sent from sh_ExecutePerLoop() via datfcn() */
+#ifdef THREADS
+    pthread_mutex_lock(&vecreallocMutex);
+#endif
+
     if (!curvecvalsall) {
         curvecvalsall = TMALLOC(vecvaluesall, 1);
     }
@@ -2515,6 +2540,11 @@ int sh_vecinit(runDesc *run)
             curvecvalsall->vecsa[i]->name = "pending"; 
         }
     }
+
+#ifdef THREADS
+    pthread_mutex_unlock(&vecreallocMutex);
+#endif
+
     return 0;
 }
 
@@ -2679,6 +2709,25 @@ static int totalreset(void)
         _endthreadex(1);
 #endif
     }
+    
+    /* VioSpice: Global cleanup of data structures */
+#ifdef THREADS
+    pthread_mutex_lock(&vecreallocMutex);
+#endif
+    if (curvecvalsall) {
+        if (curvecvalsall->vecsa) {
+            int i;
+            for (i = 0; i < curvecvalsall->veccount; i++) {
+                if (curvecvalsall->vecsa[i]) tfree(curvecvalsall->vecsa[i]);
+            }
+            tfree(curvecvalsall->vecsa);
+        }
+        tfree(curvecvalsall);
+        curvecvalsall = NULL;
+    }
+#ifdef THREADS
+    pthread_mutex_unlock(&vecreallocMutex);
+#endif
 
     /* start to clean up the mess */
 
