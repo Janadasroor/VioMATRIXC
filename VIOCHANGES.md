@@ -2,7 +2,7 @@
 
 This file documents the VioMATRIXC changes that matter to VioSpice users and
 integrators. It is not a replacement for ngspice upstream history; upstream
-attribution remains in `AUTHORS`, `ChangeLog`, and `COPYING`.
+attribution remains in `AUTHORS`, `ChangeLog`.
 
 ## Summary
 
@@ -140,6 +140,7 @@ To ensure that VioSpice (Apache 2.0) can link against VioMATRIXC without being "
 
 * **Removal of XSpice Table Models**: The directory `src/xspice/icm/table/` and its contents (GPLv2+ licensed) have been physically removed from the repository.
 * **Build System Update**: `src/xspice/icm/GNUmakefile.in` has been modified to exclude the `table` module from the build process.
+* **Removal of GPL COPYING File**: The upstream `COPYING` (GPLv3 license text) has been removed to avoid confusion. All remaining third-party code is under permissive licenses (BSD, LGPL, Apache 2.0).
 * **Bridge Compatibility**: `ngSpice_IsPaused()` has been added to `src/viospice_bridge.c` to maintain API compatibility for VioSpice after engine stabilization.
 
 This transition ensures that the resulting `libngspice.so` shared library consists only of BSD, LGPL, and Public Domain components, making it legally compatible with permissive-licensed applications.
