@@ -48,8 +48,17 @@ jobs:
         shell: msys2 {0}
         run: ./autogen.sh
 
-      - name: Configure
-        if: runner.os != 'Windows'
+      - name: Configure (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          STAGING=$PWD/staging
+          mkdir -p "$STAGING"
+          ./configure --with-ngshared --enable-cider --enable-vicompat \
+            --disable-openmp \
+            --prefix="$STAGING"
+
+      - name: Configure (Linux/other)
+        if: runner.os == 'Linux'
         run: |
           STAGING=$PWD/staging
           mkdir -p "$STAGING"
