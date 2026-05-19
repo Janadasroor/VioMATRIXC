@@ -51,17 +51,19 @@ jobs:
       - name: Configure
         if: runner.os != 'Windows'
         run: |
-          mkdir -p install
+          STAGING=$PWD/staging
+          mkdir -p "$STAGING"
           ./configure --with-ngshared --enable-cider --enable-vicompat \
-            --prefix=$PWD/install
+            --prefix="$STAGING"
 
       - name: Configure (Windows)
         if: runner.os == 'Windows'
         shell: msys2 {0}
         run: |
-          mkdir -p install
+          STAGING=$PWD/staging
+          mkdir -p "$STAGING"
           ./configure --with-ngshared --enable-cider --enable-vicompat \
-            --prefix=$PWD/install
+            --prefix="$STAGING"
 
       - name: Build
         if: runner.os != 'Windows'
@@ -77,10 +79,10 @@ jobs:
         run: |
           make install
           # Also copy code models
-          mkdir -p install/cm
+          mkdir -p staging/cm
           for d in analog digital spice2poly tlines xtradev xtraevt; do
             [ -f "src/xspice/icm/$d/$d.cm" ] && \
-              cp "src/xspice/icm/$d/$d.cm" install/cm/
+              cp "src/xspice/icm/$d/$d.cm" staging/cm/
           done
 
       - name: Install to staging dir (Windows)
@@ -89,23 +91,23 @@ jobs:
         run: |
           mingw32-make install
           # Also copy code models
-          mkdir -p install/cm
+          mkdir -p staging/cm
           for d in analog digital spice2poly tlines xtradev xtraevt; do
             [ -f "src/xspice/icm/$d/$d.cm" ] && \
-              cp "src/xspice/icm/$d/$d.cm" install/cm/
+              cp "src/xspice/icm/$d/$d.cm" staging/cm/
           done
 
       - name: Package tarball (Linux)
         if: runner.os == 'Linux'
         run: |
-          cd install
+          cd staging
           tar czf ../viomatrixc-linux-x86_64.tar.gz \
             include/ lib/ cm/
 
       - name: Package tarball (macOS)
         if: runner.os == 'macOS'
         run: |
-          cd install
+          cd staging
           tar czf ../viomatrixc-macos-arm64.tar.gz \
             include/ lib/ cm/
 
@@ -113,7 +115,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          Compress-Archive -Path install\* -DestinationPath viomatrixc-windows-x86_64.zip
+          Compress-Archive -Path staging\* -DestinationPath viomatrixc-windows-x86_64.zip
 
       - name: Upload release asset (Linux)
         if: runner.os == 'Linux' && startsWith(github.ref, 'refs/tags/v')
