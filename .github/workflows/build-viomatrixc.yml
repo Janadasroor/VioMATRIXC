@@ -72,7 +72,7 @@ jobs:
           STAGING=$PWD/staging
           mkdir -p "$STAGING"
           ./configure --with-ngshared --enable-cider --enable-vicompat \
-            ac_cv_lib_pthread_pthread_mutex_lock=no \
+            ac_cv_lib_pthread_pthread_create=no \
             --prefix="$STAGING"
 
       - name: Build
