@@ -25,7 +25,7 @@ INCLUDES = -I$(top_builddir)/src/include -I$(top_srcdir)/src/include
 # CFLAGS to use here
 EXTRA_CFLAGS = -fPIC -Wshadow
 DEPFLAGS = -MD -MF
-ISMINGW = $(shell uname | grep -c "MINGW32")
+ISMINGW = $(shell uname | grep -c "MINGW")
 ifeq ($(ISMINGW), 1)
   EXTRA_CFLAGS = -Wshadow
 endif
