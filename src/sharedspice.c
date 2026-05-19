@@ -81,9 +81,7 @@ myfputc(int inp, FILE* f)
 #include "misc/misc_time.h"
 #include "ngspice/randnumb.h"
 
-/*Use Windows threads if on W32 without pthreads*/
-#ifndef HAVE_LIBPTHREAD
-
+/*Use Windows native threads on MinGW/MSVC, pthreads on POSIX*/
 #if defined(__MINGW32__) || defined(_MSC_VER)
 //#if defined(_MSC_VER)
 #ifdef SRW
@@ -101,9 +99,7 @@ typedef HANDLE threadId_t;
 #define WIN_THREADS
 #define THREADS
 
-#endif
-
-#else
+#elif defined(HAVE_LIBPTHREAD)
 
 #include <pthread.h>
 #define mutex_lock(a) pthread_mutex_lock(a)
