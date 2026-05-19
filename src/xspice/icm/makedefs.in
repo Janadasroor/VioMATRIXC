@@ -49,7 +49,7 @@ LIBS = -lm
 # Flags to use when linking shared library
 LDFLAGS = -shared
 ifeq ($(ISMINGW), 1)
-  LDFLAGS = -shared @LDFLAGS@
+  LDFLAGS = -shared @LDFLAGS@ -Wl,--allow-shlib-undefined
 endif
 ifeq "$(strip $(uname))" "Darwin"
   LDFLAGS = -bundle -flat_namespace -undefined suppress
