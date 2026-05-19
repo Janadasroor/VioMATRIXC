@@ -4,7 +4,33 @@
 
 /* Synchronized ABI: (double time, const double* inputs) */
 typedef double (*viospice_jit_func_t)(double t, const double* inputs);
-extern void* viospice_jit_lookup(const char* block_id);
+
+/* Resolve viospice_jit_lookup at runtime so we don't need import libs.
+ * On ELF (Linux/macOS) the dynamic linker resolves it from libngspice;
+ * on PE (Windows/MinGW) we use GetProcAddress since DLLs can't reference
+ * symbols in the loading module at build time. */
+#ifdef _WIN32
+#include <windows.h>
+static void* viospice_jit_lookup(const char* block_id) {
+    static void* (*real_lookup)(const char*) = NULL;
+    if (!real_lookup) {
+        HMODULE mod = GetModuleHandleA("libngspice.dll");
+        if (mod) real_lookup = (void* (*)(const char*))GetProcAddress(mod, "viospice_jit_lookup");
+    }
+    return real_lookup ? real_lookup(block_id) : NULL;
+}
+#else
+#include <dlfcn.h>
+static void* viospice_jit_lookup(const char* block_id) {
+    static void* (*real_lookup)(const char*) = NULL;
+    if (!real_lookup) {
+        void* handle = dlopen("libngspice.so", RTLD_LAZY | RTLD_LOCAL);
+        if (handle) real_lookup = (void* (*)(const char*))dlsym(handle, "viospice_jit_lookup");
+        if (!real_lookup) real_lookup = (void* (*)(const char*))dlsym(RTLD_DEFAULT, "viospice_jit_lookup");
+    }
+    return real_lookup ? real_lookup(block_id) : NULL;
+}
+#endif
 
 void cm_viospice_jit_block(ARGS) {
     int i, size;
