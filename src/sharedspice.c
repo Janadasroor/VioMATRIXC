@@ -479,12 +479,12 @@ _cthread_run(void *controls)
 #ifdef HAVE_LIBPTHREAD
     if (!cont_condition)
         printf("Prepared to start controls after bg_run has finished\n");
-    pthread_mutex_lock(&triggerMutex);
+    mutex_lock(&triggerMutex);
     cont_condition = FALSE;
     do {
         pthread_cond_wait(&cond, &triggerMutex);
     } while (!cont_condition);
-    pthread_mutex_unlock(&triggerMutex);
+    mutex_unlock(&triggerMutex);
 #endif
     fl_exited = FALSE;
     for (wl = controls; wl; wl = wl->wl_next)
@@ -523,10 +523,10 @@ _thread_run(void *string)
     /* release thread tid2 */
     if (tid2) {
 #ifdef HAVE_LIBPTHREAD
-        pthread_mutex_lock(&triggerMutex);
+        mutex_lock(&triggerMutex);
         cont_condition = TRUE;
         pthread_cond_signal(&cond);
-        pthread_mutex_unlock(&triggerMutex);
+        mutex_unlock(&triggerMutex);
         pthread_join(tid2, NULL);
 #elif defined _MSC_VER || defined __MINGW32__
         ResumeThread(tid2);
@@ -2370,20 +2370,20 @@ int sh_ExecutePerLoop(void)
     struct plot *pl = plot_cur;
 
 #ifdef THREADS
-    pthread_mutex_lock(&vecreallocMutex);
+    mutex_lock(&vecreallocMutex);
 #endif
 
     /* return immediately if structure not correctly initialized */
     if (nodatawanted || !curvecvalsall || !curvecvalsall->vecsa) {
 #ifdef THREADS
-        pthread_mutex_unlock(&vecreallocMutex);
+        mutex_unlock(&vecreallocMutex);
 #endif
         return 2;
     }
 
     if (!pl || !pl->pl_dvecs) {
 #ifdef THREADS
-        pthread_mutex_unlock(&vecreallocMutex);
+        mutex_unlock(&vecreallocMutex);
 #endif
         return 2;
     }
@@ -2393,7 +2393,7 @@ int sh_ExecutePerLoop(void)
     /* safeguard against vectors with 0 length (e.g. @c1[i] during ac simulation) */
     if (veclen < 0) {
 #ifdef THREADS
-        pthread_mutex_unlock(&vecreallocMutex);
+        mutex_unlock(&vecreallocMutex);
 #endif
         return 2;
     }
@@ -2434,7 +2434,7 @@ int sh_ExecutePerLoop(void)
     }
 
 #ifdef THREADS
-    pthread_mutex_unlock(&vecreallocMutex);
+    mutex_unlock(&vecreallocMutex);
 #endif
 
     return 0;
@@ -2499,7 +2499,7 @@ int sh_vecinit(runDesc *run)
     /* generate the data tranfer structure,
        data will be sent from sh_ExecutePerLoop() via datfcn() */
 #ifdef THREADS
-    pthread_mutex_lock(&vecreallocMutex);
+    mutex_lock(&vecreallocMutex);
 #endif
 
     if (!curvecvalsall) {
@@ -2538,7 +2538,7 @@ int sh_vecinit(runDesc *run)
     }
 
 #ifdef THREADS
-    pthread_mutex_unlock(&vecreallocMutex);
+    mutex_unlock(&vecreallocMutex);
 #endif
 
     return 0;
@@ -2708,7 +2708,7 @@ static int totalreset(void)
     
     /* VioSpice: Global cleanup of data structures */
 #ifdef THREADS
-    pthread_mutex_lock(&vecreallocMutex);
+    mutex_lock(&vecreallocMutex);
 #endif
     if (curvecvalsall) {
         if (curvecvalsall->vecsa) {
@@ -2722,7 +2722,7 @@ static int totalreset(void)
         curvecvalsall = NULL;
     }
 #ifdef THREADS
-    pthread_mutex_unlock(&vecreallocMutex);
+    mutex_unlock(&vecreallocMutex);
 #endif
 
     /* start to clean up the mess */
