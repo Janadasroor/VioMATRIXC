@@ -168,6 +168,8 @@ jobs:
 
       - name: Configure (console — for tests)
         run: |
+          export CPPFLAGS="-I$(brew --prefix readline)/include"
+          export LDFLAGS="-L$(brew --prefix readline)/lib"
           mkdir -p build-console
           cd build-console
           ../configure --with-x --enable-cider --enable-vicompat \
@@ -253,8 +255,10 @@ jobs:
         run: mingw32-make -j$(nproc) -C build-shared
 
       - name: Install
+        run: mingw32-make -C build-shared install
+
+      - name: Copy code models
         run: |
-          mingw32-make -C build-shared install
           mkdir -p build-shared/staging/cm
           for d in analog digital spice2poly tlines xtradev xtraevt; do
             [ -f "src/xspice/icm/$d/$d.cm" ] && \
