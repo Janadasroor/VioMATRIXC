@@ -161,7 +161,7 @@ jobs:
 
       - name: Install deps
         run: |
-          brew install autoconf automake libtool bison flex fftw
+          brew install autoconf automake libtool bison flex fftw readline
 
       - name: Bootstrap
         run: ./autogen.sh
