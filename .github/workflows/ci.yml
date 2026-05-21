@@ -81,8 +81,9 @@ jobs:
           make -C build-shared install
           mkdir -p build-shared/staging/cm
           for d in analog digital spice2poly tlines xtradev xtraevt; do
-            [ -f "src/xspice/icm/$d/$d.cm" ] && \
+            if [ -f "src/xspice/icm/$d/$d.cm" ]; then
               cp "src/xspice/icm/$d/$d.cm" build-shared/staging/cm/
+            fi
           done
 
   # ------------------------------------------------------------------
@@ -134,8 +135,9 @@ jobs:
           make -C build-shared install
           mkdir -p build-shared/staging/cm
           for d in analog digital spice2poly tlines xtradev xtraevt; do
-            [ -f "src/xspice/icm/$d/$d.cm" ] && \
+            if [ -f "src/xspice/icm/$d/$d.cm" ]; then
               cp "src/xspice/icm/$d/$d.cm" build-shared/staging/cm/
+            fi
           done
 
       - name: Package
@@ -199,8 +201,9 @@ jobs:
           make -C build-shared install
           mkdir -p build-shared/staging/cm
           for d in analog digital spice2poly tlines xtradev xtraevt; do
-            [ -f "src/xspice/icm/$d/$d.cm" ] && \
+            if [ -f "src/xspice/icm/$d/$d.cm" ]; then
               cp "src/xspice/icm/$d/$d.cm" build-shared/staging/cm/
+            fi
           done
 
       - name: Package
@@ -261,8 +264,9 @@ jobs:
         run: |
           mkdir -p build-shared/staging/cm
           for d in analog digital spice2poly tlines xtradev xtraevt; do
-            [ -f "src/xspice/icm/$d/$d.cm" ] && \
+            if [ -f "src/xspice/icm/$d/$d.cm" ]; then
               cp "src/xspice/icm/$d/$d.cm" build-shared/staging/cm/
+            fi
           done
 
       - name: Package
