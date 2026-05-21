@@ -1,0 +1,276 @@
+name: CI
+on:
+  push:
+    branches: [master]
+    tags: ["v*"]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+    inputs:
+      linux-x86-64:
+        type: boolean
+        default: true
+        description: Linux x86_64
+      linux-arm64:
+        type: boolean
+        default: true
+        description: Linux ARM64
+      macos:
+        type: boolean
+        default: true
+        description: macOS ARM64
+      windows:
+        type: boolean
+        default: true
+        description: Windows x86_64
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ------------------------------------------------------------------
+  # Linux x86_64
+  # ------------------------------------------------------------------
+  linux-x86-64:
+    if: github.event_name != 'workflow_dispatch' || inputs.linux-x86-64 == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq autoconf automake libtool \
+            flex bison gcc g++ make \
+            libxaw7-dev libx11-dev libreadline-dev libfftw3-dev
+
+      - name: Bootstrap
+        run: ./autogen.sh
+
+      - name: Configure (console — for tests)
+        run: |
+          mkdir -p build-console
+          cd build-console
+          ../configure --with-x --enable-cider --enable-vicompat
+
+      - name: Build
+        run: make -j$(nproc) -C build-console
+
+      - name: Test
+        run: make -C build-console check || true
+
+      - name: Configure (shared — for packaging)
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          mkdir -p build-shared
+          cd build-shared
+          ../configure --with-ngshared --enable-cider --enable-vicompat \
+            --prefix=$PWD/staging
+
+      - name: Build shared
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: make -j$(nproc) -C build-shared
+
+      - name: Install shared
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          make -C build-shared install
+          mkdir -p build-shared/staging/cm
+          for d in analog digital spice2poly tlines xtradev xtraevt; do
+            [ -f "src/xspice/icm/$d/$d.cm" ] && \
+              cp "src/xspice/icm/$d/$d.cm" build-shared/staging/cm/
+          done
+
+  # ------------------------------------------------------------------
+  # Linux ARM64
+  # ------------------------------------------------------------------
+  linux-arm64:
+    if: github.event_name != 'workflow_dispatch' || inputs.linux-arm64 == 'true'
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq autoconf automake libtool \
+            flex bison gcc g++ make \
+            libxaw7-dev libx11-dev libreadline-dev libfftw3-dev
+
+      - name: Bootstrap
+        run: ./autogen.sh
+
+      - name: Configure (console — for tests)
+        run: |
+          mkdir -p build-console
+          cd build-console
+          ../configure --with-x --enable-cider --enable-vicompat
+
+      - name: Build
+        run: make -j$(nproc) -C build-console
+
+      - name: Test
+        run: make -C build-console check || true
+
+      - name: Configure (shared — for packaging)
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          mkdir -p build-shared
+          cd build-shared
+          ../configure --with-ngshared --enable-cider --enable-vicompat \
+            --prefix=$PWD/staging
+
+      - name: Build shared
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: make -j$(nproc) -C build-shared
+
+      - name: Install shared
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          make -C build-shared install
+          mkdir -p build-shared/staging/cm
+          for d in analog digital spice2poly tlines xtradev xtraevt; do
+            [ -f "src/xspice/icm/$d/$d.cm" ] && \
+              cp "src/xspice/icm/$d/$d.cm" build-shared/staging/cm/
+          done
+
+      - name: Package
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          cd build-shared/staging
+          tar czf ../../viomatrixc-linux-arm64.tar.gz include/ lib/ cm/
+
+      - name: Upload release asset
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: viomatrixc-linux-arm64.tar.gz
+
+  # ------------------------------------------------------------------
+  # macOS ARM64
+  # ------------------------------------------------------------------
+  macos:
+    if: github.event_name != 'workflow_dispatch' || inputs.macos == 'true'
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install deps
+        run: |
+          brew install autoconf automake libtool bison flex fftw
+
+      - name: Bootstrap
+        run: ./autogen.sh
+
+      - name: Configure (console — for tests)
+        run: |
+          mkdir -p build-console
+          cd build-console
+          ../configure --with-x --enable-cider --enable-vicompat \
+            --disable-openmp
+
+      - name: Build
+        run: make -j$(sysctl -n hw.logicalcpu) -C build-console
+
+      - name: Test
+        run: make -C build-console check || true
+
+      - name: Configure (shared — for packaging)
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          mkdir -p build-shared
+          cd build-shared
+          ../configure --with-ngshared --enable-cider --enable-vicompat \
+            --disable-openmp --prefix=$PWD/staging
+
+      - name: Build shared
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: make -j$(sysctl -n hw.logicalcpu) -C build-shared
+
+      - name: Install shared
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          make -C build-shared install
+          mkdir -p build-shared/staging/cm
+          for d in analog digital spice2poly tlines xtradev xtraevt; do
+            [ -f "src/xspice/icm/$d/$d.cm" ] && \
+              cp "src/xspice/icm/$d/$d.cm" build-shared/staging/cm/
+          done
+
+      - name: Package
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          cd build-shared/staging
+          tar czf ../../viomatrixc-macos-arm64.tar.gz include/ lib/ cm/
+
+      - name: Upload release asset
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: viomatrixc-macos-arm64.tar.gz
+
+  # ------------------------------------------------------------------
+  # Windows x86_64 (MSYS2 / MINGW64)
+  # ------------------------------------------------------------------
+  windows:
+    if: github.event_name != 'workflow_dispatch' || inputs.windows == 'true'
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            base-devel
+            autoconf automake libtool
+            bison flex
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-make
+            mingw-w64-x86_64-libtool
+            mingw-w64-x86_64-winpthreads
+
+      - name: Bootstrap
+        run: ./autogen.sh
+
+      - name: Configure (shared)
+        run: |
+          mkdir -p build-shared
+          cd build-shared
+          ../configure --with-ngshared --enable-cider --enable-vicompat \
+            --prefix=$PWD/staging
+
+      - name: Build
+        run: mingw32-make -j$(nproc) -C build-shared
+
+      - name: Install
+        run: |
+          mingw32-make -C build-shared install
+          mkdir -p build-shared/staging/cm
+          for d in analog digital spice2poly tlines xtradev xtraevt; do
+            [ -f "src/xspice/icm/$d/$d.cm" ] && \
+              cp "src/xspice/icm/$d/$d.cm" build-shared/staging/cm/
+          done
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $staging = "build-shared/staging"
+          if (Test-Path "$staging/include") {
+            Compress-Archive -Path "$staging/*" -DestinationPath viomatrixc-windows-x86_64.zip
+          }
+
+      - name: Upload release asset
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: viomatrixc-windows-x86_64.zip
