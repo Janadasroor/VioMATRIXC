@@ -253,7 +253,7 @@ if_run(CKTcircuit *ckt, char *what, wordlist *args, INPtables *tab)
         )
     {
         s = wl_flatten(args); /* va: tfree char's tmalloc'ed in wl_flatten */
-        (void) sprintf(buf, ".%s", s);
+        (void) snprintf(buf, sizeof(buf), ".%s", s);
         tfree(s);
         deck.nextcard = deck.actualLine = NULL;
         deck.error = NULL;

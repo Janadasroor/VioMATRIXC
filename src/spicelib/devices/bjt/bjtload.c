@@ -562,7 +562,11 @@ next1:      vtn=vt*here->BJTtemissionCoeffF;
             /*
              *   determine base charge terms
              */
-            q1=1/(1-here->BJTtinvEarlyVoltF*vbc-here->BJTtinvEarlyVoltR*vbe);
+            {
+                double q1_denom = 1 - here->BJTtinvEarlyVoltF * vbc - here->BJTtinvEarlyVoltR * vbe;
+                if (fabs(q1_denom) < 1e-12) q1_denom = (q1_denom < 0 ? -1e-12 : 1e-12);
+                q1 = 1 / q1_denom;
+            }
             if(here->BJTtinvRollOffF == 0 && here->BJTtinvRollOffR == 0) {
                 qb=q1;
                 dqbdve=q1*qb*here->BJTtinvEarlyVoltR;
@@ -577,12 +581,16 @@ next1:      vtn=vt*here->BJTtemissionCoeffF;
                     if(arg != 0) sqarg=pow(arg,model->BJTnkf);
                 }
                 qb=q1*(1+sqarg)/2;
-                if(!model->BJTnkfGiven) {
-                    dqbdve=q1*(qb*here->BJTtinvEarlyVoltR+here->BJTtinvRollOffF*gbe/sqarg);
-                    dqbdvc=q1*(qb*here->BJTtinvEarlyVoltF+here->BJTtinvRollOffR*gbc/sqarg);
-                } else {
-                    dqbdve=q1*(qb*here->BJTtinvEarlyVoltR+here->BJTtinvRollOffF*gbe*2*sqarg*model->BJTnkf/arg);
-                    dqbdvc=q1*(qb*here->BJTtinvEarlyVoltF+here->BJTtinvRollOffR*gbc*2*sqarg*model->BJTnkf/arg);
+                {
+                    double sqarg_safe = (sqarg != 0.0) ? sqarg : 1.0;
+                    double arg_safe = (arg != 0.0) ? arg : 1.0;
+                    if(!model->BJTnkfGiven) {
+                        dqbdve=q1*(qb*here->BJTtinvEarlyVoltR+here->BJTtinvRollOffF*gbe/sqarg_safe);
+                        dqbdvc=q1*(qb*here->BJTtinvEarlyVoltF+here->BJTtinvRollOffR*gbc/sqarg_safe);
+                    } else {
+                        dqbdve=q1*(qb*here->BJTtinvEarlyVoltR+here->BJTtinvRollOffF*gbe*2*sqarg*model->BJTnkf/arg_safe);
+                        dqbdvc=q1*(qb*here->BJTtinvEarlyVoltF+here->BJTtinvRollOffR*gbc*2*sqarg*model->BJTnkf/arg_safe);
+                    }
                 }
             }
             /*
@@ -609,25 +617,31 @@ next1:      vtn=vt*here->BJTtemissionCoeffF;
                         ckt->CKTdeltaOld[1])/denom;
                 cex=cbe*arg3;
                 gex=gbe*arg3;
-                *(ckt->CKTstate0 + here->BJTcexbc)=cc+cex/qb;
+                double qb_safe = (qb != 0.0) ? qb : 1e-12;
+                *(ckt->CKTstate0 + here->BJTcexbc)=cc+cex/qb_safe;
             }
             /*
              *   determine dc incremental conductances
              */
-            cc=cc+(cex-cbc)/qb-cbc/here->BJTtBetaR-cbcn;
-            cb=cbe/here->BJTtBetaF+cben+cbc/here->BJTtBetaR+cbcn;
-            gx=here->BJTtminBaseResist+rbpi/qb;
-            if(here->BJTtbaseCurrentHalfResist != 0) {
-                arg1=MAX(cb/here->BJTtbaseCurrentHalfResist,1e-9);
-                arg2=(-1+sqrt(1+14.59025*arg1))/2.4317/sqrt(arg1);
-                arg1=tan(arg2);
-                gx=here->BJTtminBaseResist+3*rbpi*(arg1-arg2)/arg2/arg1/arg1;
+            {
+                double qb_safe = (qb != 0.0) ? qb : 1e-12;
+                cc=cc+(cex-cbc)/qb_safe-cbc/here->BJTtBetaR-cbcn;
+                cb=cbe/here->BJTtBetaF+cben+cbc/here->BJTtBetaR+cbcn;
+                gx=here->BJTtminBaseResist+rbpi/qb_safe;
+                if(here->BJTtbaseCurrentHalfResist != 0) {
+                    arg1=MAX(cb/here->BJTtbaseCurrentHalfResist,1e-9);
+                    arg2=(-1+sqrt(1+14.59025*arg1))/2.4317/sqrt(arg1);
+                    arg1=tan(arg2);
+                    double tan_denom = arg2 * arg1 * arg1;
+                    if (fabs(tan_denom) < 1e-12) tan_denom = (tan_denom < 0 ? -1e-12 : 1e-12);
+                    gx=here->BJTtminBaseResist+3*rbpi*(arg1-arg2)/tan_denom;
+                }
+                if(gx != 0) gx=1/gx;
+                gpi=gbe/here->BJTtBetaF+gben;
+                gmu=gbc/here->BJTtBetaR+gbcn;
+                go=(gbc+(cex-cbc)*dqbdvc/qb_safe)/qb_safe;
+                gm=(gex-(cex-cbc)*dqbdve/qb_safe)/qb_safe-go;
             }
-            if(gx != 0) gx=1/gx;
-            gpi=gbe/here->BJTtBetaF+gben;
-            gmu=gbc/here->BJTtBetaR+gbcn;
-            go=(gbc+(cex-cbc)*dqbdvc/qb)/qb;
-            gm=(gex-(cex-cbc)*dqbdve/qb)/qb-go;
             if( (ckt->CKTmode & (MODEDCTRANCURVE | MODETRAN | MODEAC)) ||
                     ((ckt->CKTmode & MODETRANOP) && (ckt->CKTmode & MODEUIC)) ||
                     (ckt->CKTmode & MODEINITSMSIG)) {

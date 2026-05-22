@@ -1063,7 +1063,7 @@ int main(int argc, char **argv)
             if (optarg) {
                 /* switch to line buffering for stdout */
                 setvbuf(stdout, NULL, _IOLBF, BUFSIZ);
-                sprintf(log_file, "%s", optarg);
+                snprintf(log_file, sizeof(log_file), "%s", optarg);
                 oflag = TRUE;
             }
             break;
@@ -1100,7 +1100,7 @@ int main(int argc, char **argv)
 
         case soa_log:
             if (optarg) {
-                sprintf(soa_log_file, "%s", optarg);
+                snprintf(soa_log_file, sizeof(soa_log_file), "%s", optarg);
                 srflag = TRUE;
             }
             break;

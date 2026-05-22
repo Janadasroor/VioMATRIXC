@@ -1584,6 +1584,7 @@ static struct inp_read_t inp_read(FILE* fp, int call_depth, const char* dir_name
                             netlist */
 
                 strncpy(oldpath, y_dir_name, 511);
+                oldpath[511] = '\0';
 
                 /* if we don't have dir_name, e.g. when the netlist is loaded via
                 circbyline, then set dir_name to first .include path found. */

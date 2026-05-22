@@ -20,37 +20,43 @@ char *
 CKTtrouble(CKTcircuit *ckt, char *optmsg)
 {
     char	msg_buf[513];
+    size_t	rem = sizeof(msg_buf);
     char	*emsg;
     TRCV	*cv;
     int		vcode, icode, rcode;
     char	*msg_p;
     SPICEanalysis *an;
     int		i;
+    size_t	n;
 
     if (!ckt || !ckt->CKTcurJob)
 	return NULL;
 
     an = analInfo[ckt->CKTcurJob->JOBtype];
 
+    int sn;
     if (optmsg && *optmsg) {
-       sprintf(msg_buf, "%s:  %s; ", an->if_analysis.name, optmsg);
+       sn = snprintf(msg_buf, rem, "%s:  %s; ", an->if_analysis.name, optmsg);
     } else {
-       sprintf(msg_buf, "%s:  ", an->if_analysis.name);
+       sn = snprintf(msg_buf, rem, "%s:  ", an->if_analysis.name);
     }
+    if (sn > 0 && (size_t)sn < rem) { n = (size_t)sn; rem -= n; } else rem = 0;
 
-    msg_p = msg_buf + strlen(msg_buf);
+    msg_p = msg_buf + sizeof(msg_buf) - rem;
 
     switch (an->domain) {
     case TIMEDOMAIN:
 	if (ckt->CKTtime == 0.0)
-	    sprintf(msg_p, "initial timepoint: ");
+	    sn = snprintf(msg_p, rem, "initial timepoint: ");
 	else
-	    sprintf(msg_p, "time = %g, timestep = %g: ", ckt->CKTtime,
+	    sn = snprintf(msg_p, rem, "time = %g, timestep = %g: ", ckt->CKTtime,
 		ckt->CKTdelta);
+	if (sn > 0 && (size_t)sn < rem) { n = (size_t)sn; rem -= n; msg_p = msg_buf + sizeof(msg_buf) - rem; } else rem = 0;
 	break;
 
     case FREQUENCYDOMAIN:
-	sprintf(msg_p, "frequency = %g: ", ckt->CKTomega / (2.0 * M_PI));
+	sn = snprintf(msg_p, rem, "frequency = %g: ", ckt->CKTomega / (2.0 * M_PI));
+	if (sn > 0 && (size_t)sn < rem) { n = (size_t)sn; rem -= n; msg_p = msg_buf + sizeof(msg_buf) - rem; } else rem = 0;
 	break;
 
     case SWEEPDOMAIN:
@@ -60,21 +66,21 @@ CKTtrouble(CKTcircuit *ckt, char *optmsg)
 	rcode = CKTtypelook("Resistor");
 
 	for (i = 0; i <= cv->TRCVnestLevel; i++) {
-	    msg_p += strlen(msg_p);
 		if (cv->TRCVvType[i] == vcode) { /* voltage source */
-			sprintf(msg_p, " %s = %g: ", cv->TRCVvName[i],
+			sn = snprintf(msg_p, rem, " %s = %g: ", cv->TRCVvName[i],
 				((VSRCinstance*)(cv->TRCVvElt[i]))->VSRCdcValue);
 		}
 		else if (cv->TRCVvType[i] == TEMP_CODE) { /* temp sweep, if optran fails) */
-			sprintf(msg_p, " %s = %g: ", cv->TRCVvName[i], ckt->CKTtemp - CONSTCtoK);
+			sn = snprintf(msg_p, rem, " %s = %g: ", cv->TRCVvName[i], ckt->CKTtemp - CONSTCtoK);
 		}
 		else if (cv->TRCVvType[i] == rcode) {
-			sprintf(msg_p, " %s = %g: ", cv->TRCVvName[i],
+			sn = snprintf(msg_p, rem, " %s = %g: ", cv->TRCVvName[i],
 				((RESinstance*)(cv->TRCVvElt[i]))->RESresist);
 	    } else {
-		sprintf(msg_p, " %s = %g: ", cv->TRCVvName[i],
+		sn = snprintf(msg_p, rem, " %s = %g: ", cv->TRCVvName[i],
 		    ((ISRCinstance*)(cv->TRCVvElt[i]))->ISRCdcValue);
 	    }
+	    if (sn > 0 && (size_t)sn < rem) { n = (size_t)sn; rem -= n; msg_p = msg_buf + sizeof(msg_buf) - rem; } else rem = 0;
 	}
 	break;
 
@@ -83,18 +89,16 @@ CKTtrouble(CKTcircuit *ckt, char *optmsg)
 	break;
     }
 
-    msg_p += strlen(msg_p);
-
     if (ckt->CKTtroubleNode) {
-	sprintf(msg_p, "trouble with node \"%s\"\n",
+	sn = snprintf(msg_p, rem, "trouble with node \"%s\"\n",
 		CKTnodName(ckt, ckt->CKTtroubleNode));
     } else if (ckt->CKTtroubleElt) {
 	/* "-" for dop */
-	sprintf(msg_p, "trouble with %s-instance %s\n",
+	sn = snprintf(msg_p, rem, "trouble with %s-instance %s\n",
 	    ckt->CKTtroubleElt->GENmodPtr->GENmodName,
 	    ckt->CKTtroubleElt->GENname);
     } else {
-	sprintf(msg_p, "cause unrecorded.\n");
+	sn = snprintf(msg_p, rem, "cause unrecorded.\n");
     }
 
     emsg = TMALLOC(char, strlen(msg_buf) + 1);

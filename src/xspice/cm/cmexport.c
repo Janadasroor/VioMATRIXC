@@ -5,7 +5,8 @@
 
 /*how annoying!, needed for structure below*/
 static void *tcalloc(size_t a, size_t b) {
-  return tmalloc(a*b);          /* FIXME, tcalloc must zero !?!? */
+  if (a && b > (size_t)-1 / a) return NULL;
+  return calloc(a, b);
 }
 
 #ifdef HAVE_LIBGC

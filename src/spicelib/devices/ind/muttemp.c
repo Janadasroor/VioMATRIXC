@@ -126,8 +126,9 @@ MUTtemp(GENmodel *inModel, CKTcircuit *ckt)
             if (sz < system->size)
                 sz = system->size;
 
-        char *pop = TMALLOC(char, sz * sz);
-        double *INDmatrix = TMALLOC(double, sz * sz);
+        size_t sz_sq = (size_t)sz * (size_t)sz;
+        char *pop = TMALLOC(char, sz_sq);
+        double *INDmatrix = TMALLOC(double, sz_sq);
 
         for (system = first_system; system; system = system->next_system) {
             if (!system->size)
@@ -137,8 +138,8 @@ MUTtemp(GENmodel *inModel, CKTcircuit *ckt)
 
             sz = system->size;
 
-            memset(pop, 0, (size_t)(sz*sz));
-            memset(INDmatrix, 0, (size_t)(sz*sz) * sizeof(double));
+            memset(pop, 0, (size_t)sz * (size_t)sz);
+            memset(INDmatrix, 0, (size_t)sz * (size_t)sz * sizeof(double));
 
             INDinstance *ind = system->first_ind;
             for (i = 0; ind; ind = ind->system_next_ind) {

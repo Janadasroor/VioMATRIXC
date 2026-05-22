@@ -88,7 +88,7 @@ char *dup_string(const char *str, size_t n_char)
 
 char *tvprintf(const char *fmt, va_list args)
 {
-    static char buf[1024];
+    char buf[1024];
     char *p = buf;
     int size = sizeof(buf);
     int nchars;
@@ -134,7 +134,10 @@ char *tvprintf(const char *fmt, va_list args)
 
     /* Return the formatted string, making a copy on the heap if the
      * stack's buffer (buf) contains the string */
-    return (p == buf) ? dup_string(p, (size_t) nchars) : p;
+    if (p == buf) {
+        p = dup_string(p, (size_t) nchars);
+    }
+    return p;
 } /* end of function tvprintf */
 
 

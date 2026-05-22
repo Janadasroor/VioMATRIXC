@@ -37,7 +37,7 @@ typedef HANDLE threadId_t;
 #define mutex_lock(a) pthread_mutex_lock(a)
 #define mutex_unlock(a) pthread_mutex_unlock(a)
 #define thread_self() pthread_self()
-#define threadid_self() 0  //FIXME t.b.d.
+#define threadid_self() ((unsigned int)(unsigned long)pthread_self())
 typedef pthread_mutex_t mutexType;
 typedef pthread_t threadId_t;
 #define THREADS

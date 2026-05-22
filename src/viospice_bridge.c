@@ -38,7 +38,9 @@ static int jit_id_match(const char* s1, const char* s2) {
     if (*p2 == '\"') p2++;
     
     strncpy(buf1, p1, 255);
+    buf1[255] = '\0';
     strncpy(buf2, p2, 255);
+    buf2[255] = '\0';
     
     char *e1 = buf1 + strlen(buf1) - 1;
     if (e1 >= buf1 && *e1 == '\"') *e1 = '\0';

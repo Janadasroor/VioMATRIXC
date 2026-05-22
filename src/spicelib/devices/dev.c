@@ -296,9 +296,7 @@ int load_dev(char *name) {
   funptr_t fetch;
   SPICEdev *device;
 
-  strcpy(libname, "lib");
-  strcat(libname,name);
-  strcat(libname,".so");
+  snprintf(libname, sizeof(libname), "lib%s.so", name);
 
   lib = dlopen(libname,RTLD_NOW);
   if(!lib){
@@ -307,9 +305,7 @@ int load_dev(char *name) {
     return 1;
   }
 
-  strcpy(libname, "get_");
-  strcat(libname,name);
-  strcat(libname,"_info");
+  snprintf(libname, sizeof(libname), "get_%s_info", name);
   fetch = dlsym(lib,libname);
 
   if(!fetch){

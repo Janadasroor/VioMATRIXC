@@ -105,7 +105,7 @@ typedef HANDLE threadId_t;
 #define mutex_lock(a) pthread_mutex_lock(a)
 #define mutex_unlock(a) pthread_mutex_unlock(a)
 #define thread_self() pthread_self()
-#define threadid_self() 0  //FIXME t.b.d.
+#define threadid_self() ((unsigned int)(unsigned long)pthread_self())
 typedef pthread_mutex_t mutexType;
 typedef pthread_t threadId_t;
 #define THREADS
@@ -643,7 +643,8 @@ runc(char* command)
     /* run task in background if command is preceeded by "bg_" */
     if (!cieq("bg_halt", command) && !cieq("bg_pstop", command)
         && !cieq("bg_ctrl", command) && ciprefix("bg_", command)) {
-        strncpy(buf, command+3, 1024);
+        strncpy(buf, command+3, sizeof(buf) - 1);
+        buf[sizeof(buf) - 1] = '\0';
         fl_bg = TRUE;
     }
 #ifndef low_latency
@@ -671,9 +672,11 @@ runc(char* command)
     }
 #endif
     else
-        strncpy(buf, command, 1024);
+        strncpy(buf, command, sizeof(buf) - 1);
+    buf[sizeof(buf) - 1] = '\0';
 #else
-    strncpy(buf, command, 1024);
+    strncpy(buf, command, sizeof(buf) - 1);
+    buf[sizeof(buf) - 1] = '\0';
 #endif
 
 #ifdef THREADS
@@ -1297,6 +1300,7 @@ IMPEXP
 char* ngSpice_CurPlot(void)
 {
     struct plot *pl = plot_cur;
+    if (!pl) return NULL;
     return pl->pl_typename;
 }
 
@@ -1586,6 +1590,7 @@ add_bkpt(void)
 {
     int i;
     int error = 0;
+    if (!ft_curckt || !ft_curckt->ci_ckt) return 1;
     CKTcircuit *ckt =  ft_curckt->ci_ckt;
 
     if(bkpttmp && (bkpttmpsize > 0)) {
@@ -2101,11 +2106,13 @@ void SetAnalyse(
     unsigned int ng_idl = threadid_self();
     if (ng_id1 == 0) {
         ng_id1 = ng_idl;
-        strncpy(OldAn1, Analyse, 127); //strcpy(OldAn1, "?"); /* initial value */
+        strncpy(OldAn1, Analyse, sizeof(OldAn1) - 1);
+        OldAn1[sizeof(OldAn1) - 1] = '\0';
     }
     else if (ng_id2 == 0 && ng_id1 != ng_idl) {
         ng_id2 = ng_idl;
-        strncpy(OldAn2, Analyse, 127); // strcpy(OldAn2, "?"); /* initial value */
+        strncpy(OldAn2, Analyse, sizeof(OldAn2) - 1);
+        OldAn2[sizeof(OldAn2) - 1] = '\0';
     }
 
     if (ng_idl == ng_id1) {
@@ -2200,9 +2207,11 @@ void SetAnalyse(
             if ((ft_nginfo || ft_ngdebug) && (strcmp(OldAn, "")))
                printf("%s finished after %5.3f seconds.\n", OldAn, seconds());
             if(thread1)
-                strncpy(OldAn1, Analyse, 127);
+                strncpy(OldAn1, Analyse, sizeof(OldAn1) - 1);
             else
-                strncpy(OldAn2, Analyse, 127);
+                strncpy(OldAn2, Analyse, sizeof(OldAn2) - 1);
+            OldAn1[sizeof(OldAn1) - 1] = '\0';
+            OldAn2[sizeof(OldAn2) - 1] = '\0';
         }
         /* ouput only after a change */
         if (strcmp(olds, s))
