@@ -1,0 +1,18 @@
+* d_terminal loopback: TX output -> same node -> RX input
+* Auto-transmits test byte 0x55 on load for verification.
+.model term d_terminal(baud=9600 data_bits=8 stop_bits=1)
+.model bridge dac_bridge(out_low=0 out_high=5)
+
+A1 loop_node loop_node term
+
+* Probe TX via dac_bridge for analog visualization
+A_dac [loop_node] [tx_an 0] bridge
+R_load tx_an 0 10k
+
+.tran 1u 5m uic
+
+.control
+set filetype=ascii
+run
+write /tmp/dterm_raw.txt v(tx_an)
+.endc

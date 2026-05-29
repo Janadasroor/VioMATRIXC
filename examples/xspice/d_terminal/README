@@ -1,0 +1,53 @@
+d_terminal -- Digital UART Terminal with PTY
+==============================================
+
+d_terminal is an XSPICE digital code model providing an interactive serial
+terminal via a pseudo-terminal (PTY). It implements a full UART frame with
+configurable baud rate, data bits, parity, and stop bits.
+
+Port order: d_in d_out
+  d_in  = UART RX input (receives from circuit)
+  d_out = UART TX output (sends to circuit)
+
+Parameters:
+  baud      - baud rate (default 9600)
+  data_bits - data bits 5-9 (default 8)
+  parity    - "none", "even", or "odd" (default "none")
+  stop_bits - 1 or 2 (default 1)
+  pty       - PTY symlink path (e.g. "/tmp/tty")
+              Creates /dev/pts/N and a symlink at the given path.
+              Write to the PTY slave to inject bytes into the circuit.
+              Bytes received from the circuit are written to the PTY.
+
+Examples
+--------
+
+1. Simple loopback (TX -> RX on the same node, no PTY):
+
+   .model term d_terminal(baud=9600)
+   A1 loop_node loop_node term
+   .tran 1u 5m uic
+
+2. Full-duplex cross-connect with two terminals and PTY:
+
+   .model term_a d_terminal(baud=115200 pty="/tmp/tty_a")
+   .model term_b d_terminal(baud=115200 pty="/tmp/tty_b")
+   A1 rx_a tx_b term_a
+   A2 rx_b tx_a term_b
+
+3. With dac_bridge probe for visualization:
+
+   .model term d_terminal(baud=9600 pty="/tmp/tty")
+   .model bridge dac_bridge(out_low=0 out_high=5)
+   A1 rx tx term
+   A_dac [tx] [tx_an 0] bridge
+   R_load tx_an 0 10k
+   .tran 1u 5m uic
+   .control
+     write /tmp/output.raw v(tx_an)
+   .endc
+
+Files
+-----
+d_terminal_loopback.cir    -- TX->RX loopback with dac_bridge probe
+d_terminal_crosstalk.cir   -- Two-terminal cross-connect (full duplex)

@@ -1,6 +1,34 @@
 /* d_terminal — Digital UART terminal with PTY
  * Provides interactive serial terminal via pseudo-terminal.
- * d_in = UART RX (receives from circuit), d_out = UART TX (sends to circuit)
+ *
+ * Port order: d_in d_out
+ *   d_in  = UART RX (receives from circuit)
+ *   d_out = UART TX (sends to circuit)
+ *
+ * Parameters:
+ *   baud      - baud rate (default 9600)
+ *   data_bits - data bits 5-9 (default 8)
+ *   parity    - "none", "even", "odd" (default "none")
+ *   stop_bits - 1 or 2 (default 1)
+ *   pty       - PTY symlink path for interactive access
+ *               Creates /dev/pts/N and symlinks to given path.
+ *
+ * Usage (netlist):
+ *   .model uart d_terminal(baud=115200 data_bits=8 stop_bits=1 pty="/tmp/tty")
+ *   A1 rx tx uart
+ *
+ * Full-duplex cross-connect (two instances):
+ *   A1 rx_a tx_b term1
+ *   A2 rx_b tx_a term2
+ *
+ * Probe via dac_bridge (optional, for analog visualization):
+ *   .model bridge dac_bridge(out_low=0 out_high=5)
+ *   A_dac [tx] [tx_an 0] bridge
+ *
+ * NOTE: cm_schedule_output does not propagate to dac_bridge hybrid
+ * outputs. This model uses direct OUTPUT_STATE/OUTPUT_CHANGED assertion
+ * in STEP_PENDING (polling at ~1us intervals), which works correctly
+ * with dac_bridge and other hybrid analog-digital models.
  */
 
 #include <unistd.h>
