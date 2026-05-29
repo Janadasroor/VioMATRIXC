@@ -11,6 +11,10 @@
 #include <errno.h>
 #include <sys/ioctl.h>
 
+/* Suppress warn_unused_result for write/symlink (glibc attribute) */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-result"
+
 #define DT_RING_SIZE 512
 
 struct DtState {
@@ -69,7 +73,6 @@ static void dt_callback(Mif_Private_t *mif_private, Mif_Callback_Reason_t reason
                 unlink(ts->link_path);
                 ts->link_path[0] = '\0';
             }
-            fprintf(stderr, "[D_TERMINAL] closed\n");
             free(ts);
             mif_private->inst_var[0]->element[0].pvalue = NULL;
         }
@@ -117,11 +120,10 @@ void cm_d_terminal(ARGS)
                     strncpy(ts->link_path, link, sizeof(ts->link_path) - 1);
                     ts->link_path[sizeof(ts->link_path) - 1] = '\0';
                     unlink(link);
-                    symlink(ts->slave_path, link);
+                    (void)symlink(ts->slave_path, link);
                     int fl = fcntl(master, F_GETFL, 0);
                     fcntl(master, F_SETFL, fl | O_NONBLOCK);
                     ts->pty_fd = master;
-                    fprintf(stderr, "[D_TERMINAL] %s -> %s\n", link, ts->slave_path);
                 } else {
                     close(master);
                 }
@@ -234,7 +236,7 @@ void cm_d_terminal(ARGS)
                 } else if (ts->parity_type && i == ts->data_bits + 1) {
                 } else {
                     if (in_state == 1 && ts->pty_fd >= 0)
-                        write(ts->pty_fd, &ts->rx_byte, 1);
+                        (void)write(ts->pty_fd, &ts->rx_byte, 1);
                     ts->rx_busy = 0;
                 }
                 break;
@@ -247,3 +249,5 @@ void cm_d_terminal(ARGS)
 
     ts->rx_prev_in = in_state;
 }
+
+#pragma GCC diagnostic pop
