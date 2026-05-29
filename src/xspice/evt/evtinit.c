@@ -260,6 +260,9 @@ static int EVTinit_info(
         if(inst_table[i]->inst_ptr->analog)
             hybrids[j++] = inst_table[i]->inst_ptr;
     }
+    for (; j < num_hybrids; j++) {
+        hybrids[j] = NULL;
+    }
     ckt->evt->info.hybrids = hybrids;
 
     /* Return */

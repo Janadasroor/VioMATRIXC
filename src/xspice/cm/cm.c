@@ -816,7 +816,7 @@ void cm_irreversible(unsigned int place)
             if (value != 0 && value < place) {
                 hybrids[i + 1] = hybrids[i];
             } else if (value == place) {
-                duplicate(instance);
+                break;
             } else {
                 break;
             }
