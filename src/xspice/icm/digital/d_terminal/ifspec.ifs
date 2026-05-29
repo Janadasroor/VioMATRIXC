@@ -1,0 +1,77 @@
+NAME_TABLE:
+
+Spice_Model_Name:      d_terminal
+C_Function_Name:       cm_d_terminal
+Description:           "Digital UART terminal with PTY for interactive serial I/O"
+
+PORT_TABLE:
+
+Port_Name:           d_in               d_out
+Description:         "UART RX input"    "UART TX output"
+Direction:           in                 out
+Default_Type:        d                  d
+Allowed_Types:       [d]                [d]
+Vector:              no                 no
+Vector_Bounds:       -                  -
+Null_Allowed:        no                 no
+
+PARAMETER_TABLE:
+
+Parameter_Name:     baud
+Description:        "baud rate (bits per second)"
+Data_Type:          real
+Default_Value:      9600.0
+Limits:             [1.0 1.0e9]
+Vector:             no
+Vector_Bounds:      -
+Null_Allowed:       yes
+
+PARAMETER_TABLE:
+
+Parameter_Name:     data_bits
+Description:        "number of data bits (5-9)"
+Data_Type:          int
+Default_Value:      8
+Limits:             [5 9]
+Vector:             no
+Vector_Bounds:      -
+Null_Allowed:       yes
+
+PARAMETER_TABLE:
+
+Parameter_Name:     parity
+Description:        "parity: none, even, odd"
+Data_Type:          string
+Default_Value:      "none"
+Limits:             -
+Vector:             no
+Vector_Bounds:      -
+Null_Allowed:       yes
+
+PARAMETER_TABLE:
+
+Parameter_Name:     stop_bits
+Description:        "number of stop bits (1 or 2)"
+Data_Type:          real
+Default_Value:      1
+Limits:             [1 2]
+Vector:             no
+Vector_Bounds:      -
+Null_Allowed:       yes
+
+PARAMETER_TABLE:
+
+Parameter_Name:     pty
+Description:        "PTY symlink path for interactive terminal access"
+Data_Type:          string
+Default_Value:      -
+Limits:             -
+Vector:             no
+Vector_Bounds:      -
+Null_Allowed:       yes
+
+STATIC_VAR_TABLE:
+
+Static_Var_Name:    term_state
+Data_Type:          pointer
+Description:        "Pointer to per-instance terminal state"
