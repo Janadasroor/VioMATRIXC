@@ -27,7 +27,7 @@
  *
  * NOTE: cm_schedule_output does not propagate to dac_bridge hybrid
  * outputs. This model uses direct OUTPUT_STATE/OUTPUT_CHANGED assertion
- * in STEP_PENDING (polling at ~1us intervals), which works correctly
+ * in STEP_PENDING (polling at 1us intervals), which works correctly
  * with dac_bridge and other hybrid analog-digital models.
  */
 
@@ -38,10 +38,6 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <sys/ioctl.h>
-
-/* Suppress warn_unused_result for write/symlink (glibc attribute) */
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wunused-result"
 
 #define DT_RING_SIZE 512
 
@@ -137,7 +133,6 @@ void cm_d_terminal(ARGS)
             const char *link = PARAM(pty);
             int master = open("/dev/ptmx", O_RDWR | O_NOCTTY);
             if (master >= 0) {
-                /* Unlock slave (modern devpts handles permissions automatically) */
                 int unlock = 0;
                 ioctl(master, TIOCSPTLCK, &unlock);
 
@@ -148,9 +143,14 @@ void cm_d_terminal(ARGS)
                     strncpy(ts->link_path, link, sizeof(ts->link_path) - 1);
                     ts->link_path[sizeof(ts->link_path) - 1] = '\0';
                     unlink(link);
-                    (void)symlink(ts->slave_path, link);
-                    int fl = fcntl(master, F_GETFL, 0);
-                    fcntl(master, F_SETFL, fl | O_NONBLOCK);
+                    {
+                        int r = symlink(ts->slave_path, link);
+                        (void)r;
+                    }
+                    {
+                        int fl = fcntl(master, F_GETFL, 0);
+                        fcntl(master, F_SETFL, fl | O_NONBLOCK);
+                    }
                     ts->pty_fd = master;
                 } else {
                     close(master);
@@ -164,16 +164,6 @@ void cm_d_terminal(ARGS)
         OUTPUT_CHANGED(d_out) = TRUE;
         OUTPUT_DELAY(d_out) = 0.0;
 
-        /* Auto-transmit a test byte for verification */
-        {
-            const unsigned char test_byte = 0x55;
-            int next = (ts->tx_tail + 1) % DT_RING_SIZE;
-            if (next != ts->tx_head) {
-                ts->tx_ring[ts->tx_tail] = test_byte;
-                ts->tx_tail = next;
-            }
-        }
-
         CALLBACK = dt_callback;
         cm_irreversible(1);
         cm_event_queue(1e-12);
@@ -186,14 +176,17 @@ void cm_d_terminal(ARGS)
     if (CALL_TYPE != STEP_PENDING) return;
 
     double now = TIME;
-    double tick = ts->bit_time / 80.0;
-    if (tick > 1e-6) tick = 1e-6;
-    cm_event_queue(now + tick);
 
-    /* Determine the correct output state for this time point */
+    /* Poll at 1us intervals. cm_irreversible guarantees evaluation at
+     * every analog time point; this queue call caps the max timestep.
+     * At 9600 baud (104us per bit) this gives 104 samples/bit,
+     * at 115200 baud (~8.7us per bit) this gives ~8.7 samples/bit. */
+    cm_event_queue(now + 1e-6);
+
     Digital_State_t state = ONE;
     int total = dt_frame_bits(ts->data_bits, ts->parity_type != 0, (int)ts->stop_bits);
 
+    /* TX: common-s state from elapsed time */
     if (ts->tx_busy) {
         double elapsed = now - ts->tx_start_time;
         if (elapsed >= (double)total * ts->bit_time) {
@@ -216,7 +209,7 @@ void cm_d_terminal(ARGS)
         }
     }
 
-    /* Start new byte if idle and data available */
+    /* TX: start new byte if idle and data available */
     if (!ts->tx_busy && ts->tx_head != ts->tx_tail) {
         ts->tx_byte = ts->tx_ring[ts->tx_head];
         ts->tx_head = (ts->tx_head + 1) % DT_RING_SIZE;
@@ -225,7 +218,8 @@ void cm_d_terminal(ARGS)
         state = ZERO;
     }
 
-    /* Assert output */
+    /* Assert output (always — re-asserts idle ONE when not tx_busy,
+     * preventing dac_bridge output decay with low analog timesteps) */
     OUTPUT_STATE(d_out) = state;
     OUTPUT_STRENGTH(d_out) = STRONG;
     OUTPUT_CHANGED(d_out) = TRUE;
@@ -251,7 +245,7 @@ void cm_d_terminal(ARGS)
             else
                 sample_time = ((double)i + 0.5) * ts->bit_time;
 
-            if (elapsed >= sample_time - tick && ts->rx_bit_idx == i) {
+            if (elapsed >= sample_time - 1e-6 && ts->rx_bit_idx == i) {
                 ts->rx_bit_idx = i + 1;
 
                 if (i == 0) {
@@ -262,9 +256,12 @@ void cm_d_terminal(ARGS)
                     if (in_state == 1)
                         ts->rx_byte |= (1 << di);
                 } else if (ts->parity_type && i == ts->data_bits + 1) {
+                    /* parity bit — silently consumed */
                 } else {
-                    if (in_state == 1 && ts->pty_fd >= 0)
-                        (void)write(ts->pty_fd, &ts->rx_byte, 1);
+                    if (in_state == 1 && ts->pty_fd >= 0) {
+                        int r = (int)write(ts->pty_fd, &ts->rx_byte, 1);
+                        (void)r;
+                    }
                     ts->rx_busy = 0;
                 }
                 break;
@@ -277,5 +274,3 @@ void cm_d_terminal(ARGS)
 
     ts->rx_prev_in = in_state;
 }
-
-#pragma GCC diagnostic pop
