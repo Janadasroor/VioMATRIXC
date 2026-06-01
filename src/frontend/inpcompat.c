@@ -51,6 +51,128 @@ void pspice_compat_a(struct card* oldcard);
 struct card* ltspice_compat(struct card* oldcard);
 void ltspice_compat_a(struct card* oldcard);
 
+/* Replace LTspice IF(cond, tval, fval) with standard (...)?(...):(...) */
+/* Returns a newly allocated string with all IF(...) replaced, or NULL if no change. */
+static char *replace_if_ternary(const char *line)
+{
+    if (!line) return NULL;
+    /* First pass: find leftmost IF( and analyze */
+    const char *ifpos = strstr(line, "IF(");
+    if (!ifpos) ifpos = strstr(line, "if(");
+    if (!ifpos) ifpos = strstr(line, "If(");
+    if (!ifpos) return NULL;
+
+    /* We'll build the result by processing IF() calls left-to-right.
+     * Use a dynamic buffer approach. */
+    size_t cap = strlen(line) + 256;
+    char *result = tmalloc(cap);
+    char *d = result;
+    const char *src = line;
+
+    while (1) {
+        /* Find next IF( */
+        const char *p = strstr(src, "IF(");
+        if (!p) p = strstr(src, "if(");
+        if (!p) p = strstr(src, "If(");
+        if (!p) break; /* No more IF() calls */
+
+        /* Find the matching closing paren */
+        const char *cp = p + 3;
+        int depth = 1;
+        const char *comma1 = NULL, *comma2 = NULL;
+        while (*cp && depth > 0) {
+            if (*cp == '(') depth++;
+            else if (*cp == ')') depth--;
+            if (depth == 1) {
+                if (*cp == ',' && !comma1) comma1 = cp;
+                else if (*cp == ',' && comma1 && !comma2) comma2 = cp;
+            }
+            cp++;
+        }
+        if (!comma1 || !comma2 || cp[-1] != ')') {
+            /* Malformed — copy verbatim and continue */
+            size_t skip = (size_t)(p + 3 - src);
+            if (d - result + skip >= cap) {
+                cap *= 2;
+                size_t off = (size_t)(d - result);
+                result = trealloc(result, cap);
+                d = result + off;
+            }
+            memcpy(d, src, skip);
+            d += skip;
+            src = p + 3;
+            continue;
+        }
+
+        /* Extract and strip the three arguments */
+        const char *cond_start = p + 3;
+        const char *cond_end = comma1;
+        const char *true_start = comma1 + 1;
+        const char *true_end = comma2;
+        const char *false_start = comma2 + 1;
+        const char *false_end = cp - 1;
+
+        while (cond_start < cond_end && (*cond_start == ' ' || *cond_start == '\t')) cond_start++;
+        while (cond_end > cond_start && (cond_end[-1] == ' ' || cond_end[-1] == '\t')) cond_end--;
+        while (true_start < true_end && (*true_start == ' ' || *true_start == '\t')) true_start++;
+        while (true_end > true_start && (true_end[-1] == ' ' || true_end[-1] == '\t')) true_end--;
+        while (false_start < false_end && (*false_start == ' ' || *false_start == '\t')) false_start++;
+        while (false_end > false_start && (false_end[-1] == ' ' || false_end[-1] == '\t')) false_end--;
+
+        size_t cond_len = (size_t)(cond_end - cond_start);
+        size_t true_len = (size_t)(true_end - true_start);
+        size_t false_len = (size_t)(false_end - false_start);
+        size_t prefix_len = (size_t)(p - src);
+
+        /* New segment length: prefix + (cond).?...?.(true).?...?.(false) */
+        size_t seg_len = prefix_len + 1 + cond_len + 5 + true_len + 5 + false_len + 1;
+        /* Ensure buffer has room */
+        if (d - result + seg_len + strlen(cp) + 1 >= cap) {
+            cap = d - result + seg_len + strlen(cp) + 256;
+            size_t off = (size_t)(d - result);
+            result = trealloc(result, cap);
+            d = result + off;
+        }
+
+        /* Copy prefix */
+        memcpy(d, src, prefix_len);
+        d += prefix_len;
+
+        /* Write (cond) ? (true) : (false) */
+        *d++ = '(';
+        memcpy(d, cond_start, cond_len);
+        d += cond_len;
+        *d++ = ')'; *d++ = ' '; *d++ = '?'; *d++ = ' '; *d++ = '(';
+        memcpy(d, true_start, true_len);
+        d += true_len;
+        *d++ = ')'; *d++ = ' '; *d++ = ':'; *d++ = ' '; *d++ = '(';
+        memcpy(d, false_start, false_len);
+        d += false_len;
+        *d++ = ')';
+
+        /* Advance source past the original IF() call */
+        src = cp; /* points to the char after ')' */
+
+        /* Reset ifpos pointers for next iteration */
+    }
+
+    /* Copy remaining source */
+    size_t rest = strlen(src);
+    if (d - result + rest + 1 >= cap) {
+        cap = d - result + rest + 1;
+        size_t off = (size_t)(d - result);
+        result = trealloc(result, cap);
+        d = result + off;
+    }
+    memcpy(d, src, rest + 1);
+
+    /* If no changes were made, return NULL */
+    if (strcmp(result, line) == 0) {
+        tfree(result);
+        return NULL;
+    }
+    return result;
+}
 
 
 /* Set a compatibility flag.
@@ -166,16 +288,24 @@ static void replace_table(struct card *startcard)
     static int numb = 0;
     for (card = startcard; card; card = card->nextcard) {
         char *cut_line = card->line;
-        if (*cut_line == 'e' || *cut_line == 'g') {
+        if (*cut_line == 'e' || *cut_line == 'E' ||
+            *cut_line == 'g' || *cut_line == 'G') {
             char *valp = search_plain_identifier(cut_line, "value");
             char *valp2 = search_plain_identifier(cut_line, "cur");
-            if (valp || (valp2 && *cut_line == 'g')) {
+            if (valp || (valp2 && (*cut_line == 'g' || *cut_line == 'G'))) {
                 char *ftablebeg = strstr(cut_line, "table(");
+                if (!ftablebeg)
+                    ftablebeg = strstr(cut_line, "TABLE(");
                 while (ftablebeg) {
                     /* get the beginning of the line */
                     char *begline = copy_substring(cut_line, ftablebeg);
                     /* get the table function */
                     char *tabfun = gettok_char(&ftablebeg, ')', TRUE, TRUE);
+                    if (!tabfun || strlen(tabfun) < 6) {
+                        tfree(tabfun);
+                        tfree(begline);
+                        break;
+                    }
                     /* the new e, g line */
                     char *neweline = tprintf("%s v(table_new_%d)%s",
                             begline, numb, ftablebeg);
@@ -188,8 +318,10 @@ static void replace_table(struct card *startcard)
                     tfree(card->line);
                     card->line = cut_line = neweline;
                     insert_new_line(card, newbline, 0, card->linenum_orig, card->linesource);
-                    /* read next TABLE function in cut_line */
+                    /* read next TABLE/TABLE function in cut_line */
                     ftablebeg = strstr(cut_line, "table(");
+                    if (!ftablebeg)
+                        ftablebeg = strstr(cut_line, "TABLE(");
                 }
                 continue;
             }
@@ -331,19 +463,25 @@ static struct card *ako_model(struct card *startcard)
 
 struct vsmodels {
     char *modelname;
+    char *modeltype;     /* e.g., "counter", "buf", etc. */
+    char *params;        /* e.g., "cycles=3" */
     char *subcktline;
+    struct card *cardptr; /* pointer to .model card for in-place modification */
     struct vsmodels *nextmodel;
 };
 
 /* insert a new model, just behind the given model */
 static struct vsmodels *insert_new_model(
-        struct vsmodels *vsmodel, char *name, char *subcktline)
+        struct vsmodels *vsmodel, char *name, char *type, char *params, char *subcktline)
 {
     struct vsmodels *x = TMALLOC(struct vsmodels, 1);
 
     x->nextmodel = vsmodel ? vsmodel->nextmodel : NULL;
     x->modelname = copy(name);
+    x->modeltype = type ? copy(type) : NULL;
+    x->params = params ? copy(params) : NULL;
     x->subcktline = copy(subcktline);
+    x->cardptr = NULL;
     if (vsmodel)
         vsmodel->nextmodel = x;
     else
@@ -352,16 +490,28 @@ static struct vsmodels *insert_new_model(
     return vsmodel;
 }
 
-/* find the model */
+/* find the model by name */
 static bool find_a_model(
         struct vsmodels *vsmodel, char *name, char *subcktline)
 {
     struct vsmodels *x;
-    for (x = vsmodel; vsmodel; vsmodel = vsmodel->nextmodel)
-        if (eq(vsmodel->modelname, name) &&
-                eq(vsmodel->subcktline, subcktline))
+    for (x = vsmodel; x; x = x->nextmodel)
+        if (eq(x->modelname, name) &&
+                eq(x->subcktline, subcktline))
             return TRUE;
     return FALSE;
+}
+
+/* find model by name, returning the entry */
+static struct vsmodels *find_model_by_name(
+        struct vsmodels *vsmodel, char *name, char *subcktline)
+{
+    struct vsmodels *x;
+    for (x = vsmodel; x; x = x->nextmodel)
+        if (eq(x->modelname, name) &&
+                eq(x->subcktline, subcktline))
+            return x;
+    return NULL;
 }
 
 /* delete the vsmodels list */
@@ -375,6 +525,8 @@ static bool del_models(struct vsmodels *vsmodel)
     while (vsmodel) {
         x = vsmodel->nextmodel;
         tfree(vsmodel->modelname);
+        tfree(vsmodel->modeltype);
+        tfree(vsmodel->params);
         tfree(vsmodel->subcktline);
         tfree(vsmodel);
         vsmodel = x;
@@ -1332,9 +1484,10 @@ struct card *pspice_compat(struct card *oldcard)
                 /* add to list, to change vswitch instance to code model line */
                 if (nesting > 0)
                     modelsfound = insert_new_model(
-                        modelsfound, modname, subcktline->line);
+                        modelsfound, modname, NULL, NULL, subcktline->line);
                 else
-                    modelsfound = insert_new_model(modelsfound, modname, "top");
+                    modelsfound = insert_new_model(
+                        modelsfound, modname, NULL, NULL, "top");
                 tfree(modname);
             }
             else {
@@ -1575,9 +1728,10 @@ iswi:;
                 /* add to list, to change vswitch instance to code model line */
                 if (nesting > 0)
                     modelsfound = insert_new_model(
-                        modelsfound, modname, subcktline->line);
+                        modelsfound, modname, NULL, NULL, subcktline->line);
                 else
-                    modelsfound = insert_new_model(modelsfound, modname, "top");
+                    modelsfound = insert_new_model(
+                        modelsfound, modname, NULL, NULL, "top");
                 tfree(modname);
             }
             else {
@@ -1586,78 +1740,7 @@ iswi:;
         }
     }
 
-#if(0)
-            /* we have to find 4 parameters, identified by '=', separated by
-             * spaces */
-            char* equalptr[4];
-            equalptr[0] = strstr(str, "=");
-            if (!equalptr[0]) {
-                fprintf(stderr,
-                    "Error: not enough parameters in iswitch model\n   "
-                    "%s\n",
-                    card->line);
-                controlled_exit(1);
-            }
-            for (i = 1; i < 4; i++) {
-                equalptr[i] = strstr(equalptr[i - 1] + 1, "=");
-                if (!equalptr[i]) {
-                    fprintf(stderr,
-                        "Error: not enough parameters in iswitch model\n "
-                        "  %s\n",
-                        card->line);
-                    controlled_exit(1);
-                }
-            }
-            for (i = 0; i < 4; i++) {
-                equalptr[i] = skip_back_ws(equalptr[i], str);
-                while (*(equalptr[i]) != '(' && !isspace_c(*(equalptr[i])) &&
-                    *(equalptr[i]) != ',')
-                    (equalptr[i])--;
-                (equalptr[i])++;
-            }
-            for (i = 0; i < 3; i++)
-                modpar[i] = copy_substring(equalptr[i], equalptr[i + 1] - 1);
-            if (strrchr(equalptr[3], ')'))
-                modpar[3] = copy_substring(
-                    equalptr[3], strrchr(equalptr[3], ')'));
-            else
-                /* iswitch defined without parens */
-                modpar[3] = copy(equalptr[3]);
-
-            /* check if we have parameters IT and IH */
-            for (i = 0; i < 4; i++) {
-                if (ciprefix("ih", modpar[i]))
-                    have_ih = TRUE;
-                if (ciprefix("it", modpar[i]))
-                    have_it = TRUE;
-            }
-            if (have_ih && have_it) {
-                /* replace iswitch by csw */
-                char* vs = strstr(card->line, "iswitch");
-                memmove(vs, "    csw", 7);
-            }
-            else {
-                /* replace ION by cntl_on, IOFF by cntl_off, RON by r_on, and
-                 * ROFF by r_off */
-                tfree(card->line);
-                rep_spar(modpar);
-                card->line = tprintf(
-                    /* FIXME: a new switch derived from pswitch with vnam input is due */
-                    ".model a%s aswitch(%s %s %s %s  log=TRUE  limit=TRUE)", modname,
-                   modpar[0], modpar[1], modpar[2], modpar[3]);
-            }
-            for (i = 0; i < 4; i++)
-                tfree(modpar[i]);
-            if (nesting > 0)
-                modelsfound = insert_new_model(
-                    modelsfound, modname, subcktline->line);
-            else
-                modelsfound = insert_new_model(modelsfound, modname, "top");
-            tfree(modname);
-        }
-    }
-#endif
-    /* no need to continue if no iswitch is found */
+    /* no need to continue if no vswitch is found */
     if (!modelsfound)
         return newcard;
 
@@ -1739,6 +1822,149 @@ void pspice_compat_a(struct card *oldcard)
  *         Revepsilon=0.2 Epsilon=0.2 Ilimit=7 Revilimit=7)
  * Remove '.backanno'
  */
+/* Replace LTspice/PSpice table=(...) syntax in G and E devices with ngspice
+ * native B-source table() function.
+ *
+ * LTspice format:   Gxxx n+ n- nc+ nc- table=(x0 y0, x1 y1, ...)
+ *                   Exxx n+ n- nc+ nc- table=(x0,y0 x1,y1, ...)
+ * Each is converted to a single B source using ngspice's table() function:
+ *   G → Bxxx n+ n- i = table(V(nc+, nc-), x0, y0, x1, y1, ...)
+ *   E → Bxxx n+ n- v = table(V(nc+, nc-), x0, y0, x1, y1, ...)
+ */
+static void ltspice_table_transform(struct card *startcard)
+{
+    struct card *card;
+    for (card = startcard; card; card = card->nextcard) {
+        char *cut_line = card->line;
+        if (tolower_c(*cut_line) != 'g' && tolower_c(*cut_line) != 'e')
+            continue;
+
+        /* Look for "table" keyword (case-insensitive) followed by "=" */
+        char *tablepos = NULL;
+        size_t clen = strlen(cut_line);
+        for (char *cp = cut_line; cp + 4 < cut_line + clen; cp++) {
+            if (tolower_c(cp[0]) == 't' && tolower_c(cp[1]) == 'a' &&
+                tolower_c(cp[2]) == 'b' && tolower_c(cp[3]) == 'l' &&
+                tolower_c(cp[4]) == 'e') {
+                tablepos = cp;
+                break;
+            }
+        }
+        if (!tablepos) continue;
+        
+        char *eq = strchr(tablepos, '=');
+        if (!eq) continue;
+
+        /* Skip over "table =" part and optional "{" */
+        char *s_data = eq + 1;
+        while (*s_data && (isspace_c(*s_data) || *s_data == '{')) s_data++;
+
+        if (*s_data != '(') continue;
+
+        /* Parse the line: title node1 node2 node3 node4 ... */
+        char *linecopy = copy(cut_line);
+        char *ls = linecopy;
+
+        char *title_tok = gettok(&ls);
+        char *node1 = gettok(&ls);
+        char *node2 = gettok(&ls);
+        char *node3 = gettok(&ls);
+        char *node4 = gettok(&ls);
+
+        if (!title_tok || !node1 || !node2 || !node3 || !node4) {
+            tfree(title_tok); tfree(node1); tfree(node2);
+            tfree(node3); tfree(node4);
+            tfree(linecopy);
+            continue;
+        }
+
+        /* Skip lines where node3 or node4 contain non-node characters */
+        if (strpbrk(node3, "{}()=") || strpbrk(node4, "{}()=")) {
+            tfree(title_tok); tfree(node1); tfree(node2);
+            tfree(node3); tfree(node4);
+            tfree(linecopy);
+            continue;
+        }
+
+        /* Use bracket counting to find the matching ')' for the first '(' */
+        char *open_paren = s_data;
+        int paren_count = 0;
+        char *close_paren = open_paren;
+        for (; *close_paren; close_paren++) {
+            if (*close_paren == '(') paren_count++;
+            else if (*close_paren == ')') {
+                paren_count--;
+                if (paren_count == 0) break;
+            }
+        }
+        if (!*close_paren || paren_count != 0 || close_paren <= open_paren) {
+            tfree(title_tok); tfree(node1); tfree(node2);
+            tfree(node3); tfree(node4);
+            tfree(linecopy);
+            continue;
+        }
+
+        size_t datalen = (size_t)(close_paren - open_paren - 1);
+        char *data = tmalloc(datalen + 1);
+        memcpy(data, open_paren + 1, datalen);
+        data[datalen] = '\0';
+
+        /* Check for multiple (...) groups by scanning for unescaped ')'(' */
+        int multi_group = 0;
+        for (char *p = data; *p; p++) {
+            if (*p == ')' && *(p + 1) == '(') { multi_group = 1; break; }
+        }
+        if (multi_group) {
+            tfree(data);
+            tfree(title_tok); tfree(node1); tfree(node2);
+            tfree(node3); tfree(node4);
+            tfree(linecopy);
+            continue;
+        }
+
+        /* Normalize data: replace commas with spaces */
+        for (char *p = data; *p; p++)
+            if (*p == ',') *p = ' ';
+
+        /* Build table() argument string: x0, y0, x1, y1, ... */
+        char table_args[4096] = "";
+        int idx = 0;
+        char *d = data;
+        char *tok;
+        while ((tok = gettok(&d)) != NULL) {
+            if (idx > 0)
+                strcat(table_args, ", ");
+            strcat(table_args, tok);
+            tfree(tok);
+            idx++;
+        }
+        tfree(data);
+
+        if (idx < 2) {
+            tfree(title_tok); tfree(node1); tfree(node2);
+            tfree(node3); tfree(node4);
+            tfree(linecopy);
+            continue;
+        }
+
+        /* Build the G/E source line using "value = table(V(nc+,nc-), ...)" format.
+         * This will then be handled by replace_table() in pspice_compat.
+         * Format: Gxxx n+ n- value = table(V(nc+, nc-), x1, y1, ...) */
+        char *newsrc = tprintf("%s %s %s value = table(V(%s,%s), %s)",
+                               title_tok, node1, node2,
+                               node3, node4, table_args);
+
+        /* Replace original line with the B-source */
+        tfree(card->line);
+        card->line = newsrc;
+
+        tfree(title_tok); tfree(node1); tfree(node2);
+        tfree(node3); tfree(node4);
+        tfree(linecopy);
+    }
+}
+
+
 struct card *ltspice_compat(struct card *oldcard)
 {
     struct card *card, *newcard, *nextcard;
@@ -1749,6 +1975,438 @@ struct card *ltspice_compat(struct card *oldcard)
     /* remove double braces only if not yet done in pspice_compat() */
     if (!newcompat.ps)
         rem_double_braces(oldcard);
+
+    /* replace LTspice/PSpice table=(...) syntax in G and E devices */
+    ltspice_table_transform(oldcard);
+
+    /* handle TABLE functions in G and E sources */
+    replace_table(oldcard);
+
+    /* handle LTspice "load" keyword on current sources (constant-power load) */
+    for (card = oldcard; card; card = card->nextcard) {
+        char *cl = card->line;
+        if (!cl) continue;
+        if (cl[0] != 'i' && cl[0] != 'I') continue;
+        size_t llen = strlen(cl);
+        if (llen < 6) continue;
+        if (cl[llen-1] != 'd' || cl[llen-2] != 'a' || cl[llen-3] != 'o' ||
+            cl[llen-4] != 'l' || (cl[llen-5] != ' ' && cl[llen-5] != '\t'))
+            continue;
+        char *ls_copy = copy(cl);
+        char *ls = ls_copy;
+        char *tok1 = gettok(&ls);   /* instance */
+        char *tok2 = gettok(&ls);   /* n+ */
+        char *tok3 = gettok(&ls);   /* n- */
+        char *tok4 = gettok(&ls);   /* may be "DC"/"AC" or value */
+        char *tok5 = gettok(&ls);   /* may be value or "load" */
+        if (!tok1 || !tok2 || !tok3 || !tok4) {
+            tfree(tok1); tfree(tok2); tfree(tok3); tfree(tok4); tfree(tok5);
+            tfree(ls_copy); continue;
+        }
+        /* Handle optional DC/AC keyword: I1 n+ n- DC <value> load */
+        if (strcasecmp(tok4, "DC") == 0 || strcasecmp(tok4, "AC") == 0) {
+            tfree(tok4);
+            tok4 = tok5;
+            tok5 = gettok(&ls);
+        }
+        if (!tok4 || !tok5) {
+            tfree(tok1); tfree(tok2); tfree(tok3); tfree(tok4); tfree(tok5);
+            tfree(ls_copy); continue;
+        }
+        if (strcasecmp(tok5, "load") != 0) {
+            tfree(tok1); tfree(tok2); tfree(tok3); tfree(tok4); tfree(tok5);
+            tfree(ls_copy); continue;
+        }
+        char *newline = tprintf("B%s %s %s I = %s / max(V(%s,%s), 1u)",
+                                tok1, tok2, tok3, tok4, tok2, tok3);
+        tfree(card->line);
+        card->line = newline;
+        tfree(tok1); tfree(tok2); tfree(tok3); tfree(tok4); tfree(tok5);
+        tfree(ls_copy);
+    }
+
+    /* Convert table() to pwl() in B-source expressions (ngspice has no table() for B-sources) */
+    for (card = oldcard; card; card = card->nextcard) {
+        char *cl = card->line;
+        if (!cl) continue;
+        if (tolower_c(cl[0]) != 'b') continue;
+        for (char *p = cl; *p; p++) {
+            if (tolower_c(p[0]) == 't' && tolower_c(p[1]) == 'a' &&
+                tolower_c(p[2]) == 'b' && tolower_c(p[3]) == 'l' &&
+                tolower_c(p[4]) == 'e' && p[5] == '(') {
+                p[0] = 'p'; p[1] = 'w'; p[2] = 'l';
+                memmove(p + 3, p + 5, strlen(p + 5) + 1);
+            }
+        }
+    }
+
+    /* Strip LTspice-only ilimit=, Vser= parameters from SW models */
+    for (card = oldcard; card; card = card->nextcard) {
+        char *cl = card->line;
+        if (!cl) continue;
+        if (cl[0] != '.' || !ciprefix(".model", cl)) continue;
+        char *modline = cl + 6;
+        while (*modline == ' ' || *modline == '\t') modline++;
+        while (*modline && *modline != ' ' && *modline != '\t') modline++;
+        while (*modline == ' ' || *modline == '\t') modline++;
+        if (!modline[0]) continue;
+        if (tolower_c(modline[0]) != 's' || tolower_c(modline[1]) != 'w') continue;
+        char *result = tmalloc(strlen(cl) + 1);
+        char *dst = result;
+        char *paren = strchr(modline, '(');
+        if (paren) {
+            /* Parenthesized format: .model XXX SW(...) */
+            char *src = cl;
+            while (src < paren) *dst++ = *src++;
+            *dst++ = '(';
+            src = paren + 1;
+            int depth = 1;
+            while (*src && depth > 0) {
+                if (*src == '(') depth++;
+                else if (*src == ')') depth--;
+                if (depth == 0) break;
+                if ((tolower_c(src[0]) == 'i' &&
+                     tolower_c(src[1]) == 'l' &&
+                     tolower_c(src[2]) == 'i' &&
+                     tolower_c(src[3]) == 'm' &&
+                     tolower_c(src[4]) == 'i' &&
+                     tolower_c(src[5]) == 't' &&
+                     src[6] == '=') ||
+                    (tolower_c(src[0]) == 'v' &&
+                     tolower_c(src[1]) == 's' &&
+                     tolower_c(src[2]) == 'e' &&
+                     tolower_c(src[3]) == 'r' &&
+                     src[4] == '=')) {
+                    int kwlen = (tolower_c(src[0]) == 'i') ? 7 : 5;
+                    src += kwlen;
+                    while (*src && *src != ' ' && *src != '\t' && *src != ')' && *src != ',') src++;
+                    if (*src == ',') { src++; }
+                    while (*src == ' ' || *src == '\t') src++;
+                    continue;
+                }
+                *dst++ = *src++;
+            }
+            while (*src) *dst++ = *src++;
+        } else {
+            /* Space-separated format: .model XXX SW ... */
+            char *src = cl;
+            while (*src) {
+                if ((tolower_c(src[0]) == 'i' &&
+                     tolower_c(src[1]) == 'l' &&
+                     tolower_c(src[2]) == 'i' &&
+                     tolower_c(src[3]) == 'm' &&
+                     tolower_c(src[4]) == 'i' &&
+                     tolower_c(src[5]) == 't' &&
+                     src[6] == '=') ||
+                    (tolower_c(src[0]) == 'v' &&
+                     tolower_c(src[1]) == 's' &&
+                     tolower_c(src[2]) == 'e' &&
+                     tolower_c(src[3]) == 'r' &&
+                     src[4] == '=')) {
+                    int kwlen = (tolower_c(src[0]) == 'i') ? 7 : 5;
+                    src += kwlen;
+                    while (*src && *src != ' ' && *src != '\t')
+                        src++;
+                    while (*src == ' ' || *src == '\t') src++;
+                    continue;
+                }
+                *dst++ = *src++;
+            }
+        }
+        *dst = '\0';
+        tfree(card->line);
+        card->line = result;
+    }
+
+    /* Strip LTspice-only Rpar=, Cpar=, tripdt=, tripdv= from B-sources */
+    for (card = oldcard; card; card = card->nextcard) {
+        char *cl = card->line;
+        if (!cl) continue;
+        if (cl[0] != 'b' && cl[0] != 'B') continue;
+        if (cl[1] == '.' || cl[1] == '\0') continue;
+        int any_stripped = 0;
+        char *result = tmalloc(strlen(cl) + 1);
+        char *dst = result;
+        char *src = cl;
+        while (*src) {
+            if ((tolower_c(src[0]) == 'r' && tolower_c(src[1]) == 'p' &&
+                 tolower_c(src[2]) == 'a' && tolower_c(src[3]) == 'r' && src[4] == '=') ||
+                (tolower_c(src[0]) == 'c' && tolower_c(src[1]) == 'p' &&
+                 tolower_c(src[2]) == 'a' && tolower_c(src[3]) == 'r' && src[4] == '=') ||
+                (tolower_c(src[0]) == 't' && tolower_c(src[1]) == 'r' &&
+                 tolower_c(src[2]) == 'i' && tolower_c(src[3]) == 'p' &&
+                 tolower_c(src[4]) == 'd' && tolower_c(src[5]) == 't' && src[6] == '=') ||
+                (tolower_c(src[0]) == 't' && tolower_c(src[1]) == 'r' &&
+                 tolower_c(src[2]) == 'i' && tolower_c(src[3]) == 'p' &&
+                 tolower_c(src[4]) == 'd' && tolower_c(src[5]) == 'v' && src[6] == '=')) {
+                int kwlen = (tolower_c(src[0]) == 't') ? 7 : 5;
+                src += kwlen;
+                while (*src && *src != ' ' && *src != '\t' && *src != ';')
+                    src++;
+                while (*src == ' ' || *src == '\t') src++;
+                any_stripped = 1;
+                continue;
+            }
+            *dst++ = *src++;
+        }
+        *dst = '\0';
+        if (any_stripped) {
+            tfree(card->line);
+            card->line = result;
+        } else {
+            tfree(result);
+        }
+    }
+
+    /* Strip LTspice-only laplace keyword from R-element lines */
+    for (card = oldcard; card; card = card->nextcard) {
+        char *cl = card->line;
+        if (!cl) continue;
+        if (cl[0] != 'r' && cl[0] != 'R') continue;
+        char *la = strstr(cl, "laplace");
+        if (!la) continue;
+        if (la > cl && !isspace_c(la[-1])) continue;
+        /* Truncate at the laplace keyword */
+        *la = '\0';
+    }
+
+    /* Strip LTspice-only Rpar=, Rser=, Lser=, Cpar= from passive C/L element lines */
+    for (card = oldcard; card; card = card->nextcard) {
+        char *cl = card->line;
+        if (!cl) continue;
+        char c0 = cl[0];
+        if (c0 != 'c' && c0 != 'C' && c0 != 'l' && c0 != 'L') continue;
+        if (cl[1] == '.' || cl[1] == '\0') continue;
+        int any_stripped = 0;
+        char *result = tmalloc(strlen(cl) + 1);
+        char *dst = result;
+        char *src = cl;
+        while (*src) {
+            if ((tolower_c(src[0]) == 'r' && tolower_c(src[1]) == 'p' &&
+                 tolower_c(src[2]) == 'a' && tolower_c(src[3]) == 'r' && src[4] == '=') ||
+                (tolower_c(src[0]) == 'r' && tolower_c(src[1]) == 's' &&
+                 tolower_c(src[2]) == 'e' && tolower_c(src[3]) == 'r' && src[4] == '=') ||
+                (tolower_c(src[0]) == 'l' && tolower_c(src[1]) == 's' &&
+                 tolower_c(src[2]) == 'e' && tolower_c(src[3]) == 'r' && src[4] == '=') ||
+                (tolower_c(src[0]) == 'c' && tolower_c(src[1]) == 'p' &&
+                 tolower_c(src[2]) == 'a' && tolower_c(src[3]) == 'r' && src[4] == '=')) {
+                src += 5;
+                while (*src && *src != ' ' && *src != '\t' && *src != ';')
+                    src++;
+                while (*src == ' ' || *src == '\t') src++;
+                any_stripped = 1;
+                continue;
+            }
+            *dst++ = *src++;
+        }
+        *dst = '\0';
+        if (any_stripped) {
+            tfree(card->line);
+            card->line = result;
+        } else {
+            tfree(result);
+        }
+    }
+
+    /* Convert LTspice TBL() on I-sources to B-source pwl() */
+    /* Format: Ixxx n+ n- TBL(x0 y0 x1 y1 ...) → Bxxx n+ n- I=pwl(V(n+,n-), x0, y0, x1, y1, ...) */
+    for (card = oldcard; card; card = card->nextcard) {
+        char *cl = card->line;
+        if (!cl) continue;
+        if (cl[0] != 'i' && cl[0] != 'I') continue;
+        if (cl[1] == '.' || cl[1] == '\0') continue;
+        char *tbl = strstr(cl, "tbl(");
+        if (!tbl) tbl = strstr(cl, "TBL(");
+        if (!tbl) tbl = strstr(cl, "Tbl(");
+        if (!tbl) continue;
+        /* Extract instance name and two nodes */
+        char *copy_ls = copy(cl);
+        char *ls = copy_ls;
+        char *iname = gettok(&ls);
+        char *nplus = gettok(&ls);
+        char *nminus = gettok(&ls);
+        if (iname && nplus && nminus) {
+            /* Extract TBL arguments: everything between TBL( and the trailing ) */
+            char *args = tbl + 4;
+            char *end = args + strlen(args) - 1;
+            while (end > args && *end != ')') end--;
+            if (*end == ')') *end = '\0';
+            /* Strip leading/trailing whitespace */
+            while (*args == ' ' || *args == '\t') args++;
+            char *arg_end = args + strlen(args) - 1;
+            while (arg_end > args && (*arg_end == ' ' || *arg_end == '\t')) arg_end--;
+            *(arg_end + 1) = '\0';
+            /* Convert spaces to commas for pwl() syntax */
+            for (char *p = args; *p; p++)
+                if (*p == ' ' || *p == '\t') *p = ',';
+            char *new_line = tprintf("B%s %s %s I=pwl(V(%s,%s), %s)",
+                                     iname, nplus, nminus, nplus, nminus, args);
+            tfree(card->line);
+            card->line = new_line;
+        }
+        tfree(copy_ls);
+        tfree(iname);
+        tfree(nplus);
+        tfree(nminus);
+    }
+
+    /* Replace LTspice OTA A-device with a B-source current source */
+    for (card = oldcard; card; card = card->nextcard) {
+        char *cl = card->line;
+        if (!cl) continue;
+        if (cl[0] != 'a' && cl[0] != 'A') continue;
+        char *ls_copy = copy(cl);
+        char *ls = ls_copy;
+        char *tok0 = gettok(&ls);        /* instance name */
+        char *pin[8];
+        int npin;
+        for (npin = 0; npin < 8; npin++)
+            pin[npin] = gettok(&ls);
+        char *devtype = gettok(&ls);
+        if (!tok0 || !pin[7] || !devtype) {
+            tfree(tok0);
+            for (int i = 0; i < npin; i++) tfree(pin[i]);
+            tfree(devtype);
+            tfree(ls_copy);
+            continue;
+        }
+        int is_ota = (tolower_c(devtype[0]) == 'o' && tolower_c(devtype[1]) == 't' &&
+                      tolower_c(devtype[2]) == 'a' && devtype[3] == '\0');
+        if (!is_ota) {
+            tfree(tok0);
+            for (int i = 0; i < 8; i++) tfree(pin[i]);
+            tfree(devtype);
+            tfree(ls_copy);
+            continue;
+        }
+        /* Parse parameters after OTA keyword (remaining text in ls) */
+        char *out_pin = pin[6];   /* pin 7 = Iout output */
+        char *in_p = pin[0];      /* pin 1 = In+ */
+        char *in_m = pin[1];      /* pin 2 = In- */
+        char *g_val = NULL, *iout_val = NULL;
+        char *ref_val = NULL, *vhigh_val = NULL, *vlow_val = NULL;
+        while (*ls == ' ' || *ls == '\t') ls++;
+        if (*ls) {
+            char *p_copy = copy(ls);
+            char *tok;
+            char *pp = p_copy;
+            while ((tok = gettok(&pp)) != NULL) {
+                if (ciprefix("g=", tok)) {
+                    tfree(g_val);
+                    g_val = copy(tok + 2);
+                } else if (ciprefix("iout=", tok)) {
+                    tfree(iout_val);
+                    iout_val = copy(tok + 5);
+                } else if (ciprefix("ref=", tok)) {
+                    tfree(ref_val);
+                    ref_val = copy(tok + 4);
+                } else if (ciprefix("vhigh=", tok)) {
+                    tfree(vhigh_val);
+                    vhigh_val = copy(tok + 6);
+                } else if (ciprefix("vlow=", tok)) {
+                    tfree(vlow_val);
+                    vlow_val = copy(tok + 5);
+                }
+                tfree(tok);
+            }
+            tfree(p_copy);
+        }
+        if (!g_val) g_val = copy("1");
+        if (!iout_val) iout_val = copy("10u");
+        if (strcmp(out_pin, "0") != 0) {
+            /* Build inner: G * (V(in+) - V(in-) [- Ref]) */
+            char *expr;
+            if (ref_val)
+                expr = tprintf("(%s * (V(%s) - V(%s) - %s))", g_val, in_p, in_m, ref_val);
+            else
+                expr = tprintf("(%s * (V(%s) - V(%s)))", g_val, in_p, in_m);
+            /* Current clamp: min(max(expr, -Iout), Iout) */
+            char *clamped = tprintf("min(max(%s, -%s), %s)", expr, iout_val, iout_val);
+            tfree(expr);
+            /* Voltage compliance: conductance-based soft clamp */
+            char *final_expr;
+            if (vlow_val && vhigh_val) {
+                final_expr = tprintf("(%s) + (V(%s) - %s)*(V(%s) > %s) + (V(%s) - %s)*(V(%s) < %s)",
+                                      clamped, out_pin, vhigh_val, out_pin, vhigh_val,
+                                      out_pin, vlow_val, out_pin, vlow_val);
+            } else if (vlow_val) {
+                final_expr = tprintf("(%s) + (V(%s) - %s)*(V(%s) < %s)",
+                                      clamped, out_pin, vlow_val, out_pin, vlow_val);
+            } else if (vhigh_val) {
+                final_expr = tprintf("(%s) + (V(%s) - %s)*(V(%s) > %s)",
+                                      clamped, out_pin, vhigh_val, out_pin, vhigh_val);
+            } else {
+                final_expr = clamped;
+                clamped = NULL;
+            }
+            tfree(clamped);
+            char *newline = tprintf("B%s_ota %s 0 I = %s", tok0, out_pin, final_expr);
+            tfree(final_expr);
+            /* Comment out A1 line and add B-source after */
+            {
+                size_t llen = strlen(cl);
+                char *comment = tmalloc(llen + 2);
+                comment[0] = '*';
+                memcpy(comment + 1, cl, llen + 1);
+                tfree(card->line);
+                card->line = comment;
+            }
+            insert_new_line(card, newline, card->linenum + 1,
+                            card->linenum_orig, card->linesource);
+        } else {
+            size_t llen = strlen(cl);
+            char *newline = tmalloc(llen + 2);
+            newline[0] = '*';
+            memcpy(newline + 1, cl, llen + 1);
+            tfree(card->line);
+            card->line = newline;
+        }
+        tfree(g_val);
+        tfree(iout_val);
+        tfree(ref_val);
+        tfree(vhigh_val);
+        tfree(vlow_val);
+        tfree(tok0);
+        for (int i = 0; i < 8; i++) tfree(pin[i]);
+        tfree(devtype);
+        tfree(ls_copy);
+    }
+
+    /* Lowercase UIC in .tran lines (ngspice 45+ rejects uppercase UIC)
+     * Also convert .tran 0 tstop → .tran 1u tstop (ngspice requires tstep > 0) */
+    for (card = oldcard; card; card = card->nextcard) {
+        char *cl = card->line;
+        if (!cl) continue;
+        if (!ciprefix(".tran", cl)) continue;
+        char *uic = strstr(cl, "UIC");
+        while (uic) {
+            uic[0] = 'u'; uic[1] = 'i'; uic[2] = 'c';
+            uic = strstr(uic + 3, "UIC");
+        }
+        /* Fix tstep=0: replace leading ... 0 with ... 1u after .tran */
+        char *tstep = cl + 5;
+        while (*tstep == ' ' || *tstep == '\t') tstep++;
+        if (tstep[0] == '0' && (tstep[1] == ' ' || tstep[1] == '\t' || tstep[1] == '\0')) {
+            /* Single "0" as tstep — change to 1u (ngspice requires tstep > 0) */
+            size_t rest = strlen(tstep + 1);
+            memmove(tstep + 2, tstep + 1, rest + 1);
+            tstep[0] = '1';
+            tstep[1] = 'u';
+        }
+    }
+
+    /* Convert LTspice IF(cond, tval, fval) to standard (...)?(...):(...) */
+    /* Handles IF() in E/G VALUE={} expressions, B-source expressions, params */
+    for (card = oldcard; card; card = card->nextcard) {
+        char *cl = card->line;
+        if (!cl) continue;
+        if (cl[0] == '*' || cl[0] == '\0') continue;
+        char *newl = replace_if_ternary(cl);
+        if (newl) {
+            tfree(card->line);
+            card->line = newl;
+        }
+    }
 
     /* add funcs uplim, dnlim to beginning of deck */
     char *new_str =
@@ -1764,6 +2422,10 @@ struct card *ltspice_compat(struct card *oldcard)
     new_str = copy(".func dnlim_tanh(x, neg, z) { max(x, neg + z) - "
                    "tanh(max(0, neg + z - x) / z)*z }");
     nextcard = insert_new_line(nextcard, new_str, 4, 0, "internal");
+
+    /* Inject .param pi=... so {PI} in subcircuit expressions resolves */
+    new_str = copy(".param pi=3.141592653589793");
+    nextcard = insert_new_line(nextcard, new_str, 5, 0, "internal");
     nextcard->nextcard = oldcard;
 
     /* remove .backanno, replace 'noiseless' by 'moisy=0' */
@@ -1812,15 +2474,25 @@ struct card *ltspice_compat(struct card *oldcard)
 
         else if (ciprefix(".model", card->line) &&
                 search_plain_identifier(card->line, "d")) {
-            if (search_plain_identifier(card->line, "roff") ||
-                    search_plain_identifier(card->line, "ron") ||
-                    search_plain_identifier(card->line, "rrev") ||
-                    search_plain_identifier(card->line, "vfwd") ||
-                    search_plain_identifier(card->line, "vrev") ||
-                    search_plain_identifier(card->line, "revepsilon") ||
-                    search_plain_identifier(card->line, "epsilon") ||
-                    search_plain_identifier(card->line, "revilimit") ||
-                    search_plain_identifier(card->line, "ilimit")) {
+            /* Case-insensitive matching: lowercase a copy of the line */
+            char *lower_line = copy(card->line);
+            if (lower_line) {
+                char *lp;
+                for (lp = lower_line; *lp; lp++)
+                    *lp = (char)tolower_c(*lp);
+            }
+            int has_ltspice_params = lower_line && (
+                    search_plain_identifier(lower_line, "roff") ||
+                    search_plain_identifier(lower_line, "ron") ||
+                    search_plain_identifier(lower_line, "rrev") ||
+                    search_plain_identifier(lower_line, "vfwd") ||
+                    search_plain_identifier(lower_line, "vrev") ||
+                    search_plain_identifier(lower_line, "revepsilon") ||
+                    search_plain_identifier(lower_line, "epsilon") ||
+                    search_plain_identifier(lower_line, "revilimit") ||
+                    search_plain_identifier(lower_line, "ilimit"));
+            tfree(lower_line);
+            if (has_ltspice_params) {
                 char *modname;
 
                 /* remove parameter 'noiseless' (the model is noiseless anyway) */
@@ -1845,10 +2517,10 @@ struct card *ltspice_compat(struct card *oldcard)
                 card->line = tprintf(".model a%s sidiode%s", modname, newstr);
                 if (nesting > 0)
                     modelsfound = insert_new_model(
-                            modelsfound, modname, subcktline->line);
+                            modelsfound, modname, NULL, NULL, subcktline->line);
                 else
                     modelsfound =
-                            insert_new_model(modelsfound, modname, "top");
+                            insert_new_model(modelsfound, modname, NULL, NULL, "top");
                 tfree(modname);
                 tfree(newstr);
             }
@@ -1862,7 +2534,8 @@ struct card *ltspice_compat(struct card *oldcard)
         return newcard;
 
     /* second scan: find the diode instances d calling a simple diode model
-     * and transform them */
+     * and transform them. Also build a list of renamed devices. */
+    struct vsmodels *renamed_devices = NULL;
     for (card = nextcard; card; card = card->nextcard) {
         static struct card *subcktline = NULL;
         static int nesting = 0;
@@ -1908,17 +2581,65 @@ struct card *ltspice_compat(struct card *oldcard)
                 tfree(card->line);
                 card->line = tprintf("a%s %s %s a%s",
                     stoks[0], stoks[1], stoks[2], stoks[3]);
+                renamed_devices = insert_new_model(renamed_devices, stoks[0], NULL, NULL, "");
             }
             /* if model is not within same subcircuit, search at top level */
             else if (find_a_model(modelsfound, stoks[3], "top")) {
                 tfree(card->line);
                 card->line = tprintf("a%s %s %s a%s",
                         stoks[0], stoks[1], stoks[2], stoks[3]);
+                renamed_devices = insert_new_model(renamed_devices, stoks[0], NULL, NULL, "");
             }
             for (i = 0; i < 4; i++)
                 tfree(stoks[i]);
         }
     }
+
+    /* third scan: update I(Dxx) references in B-source and other cards
+     * to I(adxx) so that inp_meas_current() can find the renamed devices.
+     * Use lowercase i(...) because inp_modify_exp() only recognizes lowercase
+     * 'i' for the I() current-sensing function pattern. */
+    if (renamed_devices) {
+        struct vsmodels *rd;
+        for (rd = renamed_devices; rd; rd = rd->nextmodel) {
+            char *oldname = rd->modelname;
+            size_t oldlen = strlen(oldname);
+            char *findpat = tprintf("i(%s)", oldname);
+            char *findpat_upper = tprintf("I(%s)", oldname);
+            for (card = nextcard; card; card = card->nextcard) {
+                char *cut_line = card->line;
+                if (!cut_line || *cut_line == '*' || *cut_line == '\0')
+                    continue;
+                if (strstr(cut_line, findpat) || strstr(cut_line, findpat_upper)) {
+                    char *newline = tmalloc(strlen(cut_line) + oldlen + 4);
+                    char *dst = newline;
+                    char *src = cut_line;
+                    while (*src) {
+                        if ((src[0] == 'I' || src[0] == 'i') &&
+                            src[1] == '(' &&
+                            strncmp(src + 2, oldname, oldlen) == 0 &&
+                            src[2 + oldlen] == ')') {
+                            memcpy(dst, "i(a", 3);
+                            dst += 3;
+                            memcpy(dst, oldname, oldlen);
+                            dst += oldlen;
+                            *dst++ = ')';
+                            src += 3 + oldlen;
+                        } else {
+                            *dst++ = *src++;
+                        }
+                    }
+                    *dst = '\0';
+                    tfree(card->line);
+                    card->line = newline;
+                }
+            }
+            tfree(findpat);
+            tfree(findpat_upper);
+        }
+        del_models(renamed_devices);
+    }
+
     del_models(modelsfound);
 
     return newcard;
@@ -1927,11 +2648,94 @@ struct card *ltspice_compat(struct card *oldcard)
 /* Forward declaration */
 static void ltspice_a_device_transform(struct card *oldcard);
 
+/* Trim leading/trailing whitespace in-place */
+static void trim_ws(char **s)
+{
+    char *p = *s;
+    while (*p == ' ' || *p == '\t') p++;
+    if (p != *s) {
+        size_t n = strlen(p);
+        memmove(*s, p, n + 1);
+    }
+    size_t l = strlen(*s);
+    while (l > 0 && ((*s)[l - 1] == ' ' || (*s)[l - 1] == '\t'))
+        (*s)[--l] = '\0';
+}
+
+/* Add pull-down resistors to A-device DAC bridge output nodes that may float */
+static void add_dac_pulldowns(struct card *start)
+{
+    struct card *card;
+    for (card = start; card; card = card->nextcard) {
+        if (!card->line) continue;
+        if (card->line[0] != 'a') continue;
+        char *model = strrchr(card->line, ' ');
+        if (!model) continue;
+        model++;
+        /* Match model names ending in _dac */
+        size_t mlen = strlen(model);
+        if (mlen < 4) continue;
+        if (strcmp(model + mlen - 4, "_dac") != 0)
+            continue;
+
+        /* Find the analog output port [...] */
+        char *p = card->line;
+        char *last_open = NULL;
+        while ((p = strchr(p, '[')) != NULL) {
+            last_open = p;
+            p++;
+        }
+        if (!last_open) continue;
+        char *close_bracket = strchr(last_open, ']');
+        if (!close_bracket) continue;
+
+        /* Extract nodes inside last [...] */
+        char *nodes = tmalloc((size_t)(close_bracket - last_open));
+        memcpy(nodes, last_open + 1, (size_t)(close_bracket - last_open - 1));
+        nodes[close_bracket - last_open - 1] = '\0';
+        trim_ws(&nodes);
+
+        /* Extract the instance name (first token before [) for unique naming */
+        char *instname = NULL;
+        {
+            char *linecopy = copy(card->line);
+            char *ls = linecopy;
+            instname = gettok(&ls);
+            tfree(linecopy);
+        }
+
+        /* Add a pulldown for each node */
+        char *tok;
+        char *ncopy = copy(nodes);
+        char *walk = ncopy;
+        int pd_count = 0;
+        while ((tok = gettok(&walk)) != NULL) {
+            if (*tok == '~' || *tok == '[' || *tok == '%') {
+                tfree(tok);
+                continue;
+            }
+            char *pdline = tprintf("rpulldown_%s_%s_%d %s 0 10meg",
+                                   instname ? instname : "dac",
+                                   tok, pd_count, tok);
+            insert_new_line(card, pdline, card->linenum + 1,
+                            card->linenum_orig, card->linesource);
+            pd_count++;
+            tfree(tok);
+        }
+        tfree(instname);
+        tfree(ncopy);
+        tfree(nodes);
+    }
+}
+
 /* do not modify oldcard address, insert everything after first line only */
 void ltspice_compat_a(struct card *oldcard)
 {
     /* First pass: Transform LTspice fixed 8-pin A-devices to ngspice format */
     ltspice_a_device_transform(oldcard);
+
+    /* Add pulldowns on DAC output nodes that may lack DC paths */
+    add_dac_pulldowns(oldcard);
 
     /* Then run existing compat */
     oldcard->nextcard = ltspice_compat(oldcard->nextcard);
@@ -2033,7 +2837,7 @@ static const char* ltspice_devtype_to_ngspice(const char *devtype, char *mapped_
         snprintf(mapped_type, mapped_size, "d_xnor");
         return "d_xnor";
     }
-    if (strcmp(upper, "DFF") == 0 || strcmp(upper, "D_FF") == 0) {
+    if (strcmp(upper, "DFF") == 0 || strcmp(upper, "D_FF") == 0 || strcmp(upper, "DFLOP") == 0) {
         snprintf(mapped_type, mapped_size, "d_dff");
         return "d_dff";
     }
@@ -2041,13 +2845,37 @@ static const char* ltspice_devtype_to_ngspice(const char *devtype, char *mapped_
         snprintf(mapped_type, mapped_size, "d_jkff");
         return "d_jkff";
     }
-    if (strcmp(upper, "SRFF") == 0 || strcmp(upper, "SR_FF") == 0) {
+    if (strcmp(upper, "SRFF") == 0 || strcmp(upper, "SR_FF") == 0 || strcmp(upper, "SRFLOP") == 0) {
         snprintf(mapped_type, mapped_size, "d_srff");
         return "d_srff";
     }
     if (strcmp(upper, "DLATCH") == 0 || strcmp(upper, "D_LATCH") == 0) {
         snprintf(mapped_type, mapped_size, "d_dlatch");
         return "d_dlatch";
+    }
+    if (strcmp(upper, "SRLATCH") == 0 || strcmp(upper, "SR_LATCH") == 0) {
+        snprintf(mapped_type, mapped_size, "d_srlatch");
+        return "d_srlatch";
+    }
+    if (strcmp(upper, "TFF") == 0 || strcmp(upper, "T_FF") == 0) {
+        snprintf(mapped_type, mapped_size, "d_tff");
+        return "d_tff";
+    }
+    if (strcmp(upper, "PHASEDET") == 0 || strcmp(upper, "PHIDET") == 0) {
+        snprintf(mapped_type, mapped_size, "d_phasedet");
+        return "d_phasedet";
+    }
+    if (strcmp(upper, "MODULATOR") == 0) {
+        snprintf(mapped_type, mapped_size, "a_modulator");
+        return "a_modulator";
+    }
+    if (strcmp(upper, "SAMPLEHOLD") == 0) {
+        snprintf(mapped_type, mapped_size, "a_samplehold");
+        return "a_samplehold";
+    }
+    if (strcmp(upper, "VARISTOR") == 0) {
+        snprintf(mapped_type, mapped_size, "a_varistor");
+        return "a_varistor";
     }
 
     /* Unknown device type - return as-is */
@@ -2077,14 +2905,18 @@ static int ltspice_device_pin_count(const char *devtype)
     if (strcmp(upper, "NOR") == 0) return 3;   /* in1, in2, out */
     if (strcmp(upper, "XOR") == 0) return 3;   /* in1, in2, out */
     if (strcmp(upper, "XNOR") == 0) return 3;  /* in1, in2, out */
-    if (strcmp(upper, "DFF") == 0 || strcmp(upper, "D_FF") == 0) return 4;   /* d, clk, q, nq */
+    if (strcmp(upper, "DFF") == 0 || strcmp(upper, "D_FF") == 0 || strcmp(upper, "DFLOP") == 0) return 4;   /* d, clk, q, nq */
     if (strcmp(upper, "JKFF") == 0 || strcmp(upper, "JK_FF") == 0) return 4; /* j, k, clk, q */
-    if (strcmp(upper, "SRFF") == 0 || strcmp(upper, "SR_FF") == 0) return 4; /* s, r, q, nq */
+    if (strcmp(upper, "SRFF") == 0 || strcmp(upper, "SR_FF") == 0 || strcmp(upper, "SRFLOP") == 0) return 4; /* s, r, q, nq */
     if (strcmp(upper, "DLATCH") == 0 || strcmp(upper, "D_LATCH") == 0) return 3; /* d, en, q */
     if (strcmp(upper, "SRLATCH") == 0 || strcmp(upper, "SR_LATCH") == 0) return 3; /* s, r, q */
     if (strcmp(upper, "TFF") == 0 || strcmp(upper, "T_FF") == 0) return 3; /* t, clk, q */
+    if (strcmp(upper, "PHASEDET") == 0 || strcmp(upper, "PHIDET") == 0) return 4; /* A, B, Q, NQ */
     if (strcmp(upper, "TRISTATE") == 0) return 3; /* in, en, out */
     if (strcmp(upper, "RAM") == 0) return 5; /* addr, data_in, clk, we, data_out */
+    if (strcmp(upper, "MODULATOR") == 0) return 4; /* fm, am, cos, sin */
+    if (strcmp(upper, "SAMPLEHOLD") == 0) return 3; /* in, clk, out */
+    if (strcmp(upper, "VARISTOR") == 0) return 4; /* in+, in-, out+, out- */
 
     return 0; /* Unknown - no transformation */
 }
@@ -2131,6 +2963,174 @@ static int ltspice_pin_index(const char *devtype, int ngspice_port)
     return ngspice_port; /* Fallback: direct mapping */
 }
 
+/* ---- LTspice inline parameter parsing ---- */
+
+typedef struct {
+    bool present;   /* true if any bridge-relevant param was found */
+    double vhigh, vlow, trise, tfall, ref, vt, td;
+    double cycles;
+    double mark, space;
+    double vref, roff, rclamp;
+    bool has_vhigh, has_vlow, has_trise, has_tfall, has_ref, has_vt, has_td;
+    bool has_cycles;
+    bool has_mark, has_space;
+    bool has_vref, has_roff, has_rclamp;
+} LtspiceInlineParams;
+
+/* Parse a number with optional engineering suffix or trailing unit tag.
+ * Engineering scale suffixes (lowercase, case-sensitive by convention):
+ *   T=1e12, G=1e9, MEG=1e6, k=1e3, m=1e-3, u=1e-6, n=1e-9, p=1e-12, f=1e-15.
+ * Trailing unit tags (V, A, W, Hz, F, H, Ohm, S) are silently stripped AFTER
+ * the scale suffix has been applied.  If no scale suffix is found, a trailing
+ * unit tag is stripped (e.g. "5V" -> 5.0, "10f" -> 10e-15, "100m" -> 0.1). */
+static bool parse_eng_number(const char *str, double *result)
+{
+    char *end;
+    *result = strtod(str, &end);
+    if (end == str) return false;
+    if (*end == '\0') return true;
+
+    /* --- First: check for engineering scale suffix --- */
+    int consumed = 0;
+    double scale = 1.0;
+
+    switch (*end) {
+    case 'T': case 't': scale = 1e12; consumed = 1; break;
+    case 'G': case 'g': scale = 1e9; consumed = 1; break;
+    case 'K': case 'k': scale = 1e3; consumed = 1; break;
+    case 'M': case 'm':
+        /* MEG/meg = mega, otherwise milli */
+        if ((end[1] == 'E' || end[1] == 'e') &&
+            (end[2] == 'G' || end[2] == 'g')) {
+            scale = 1e6; consumed = 3;
+        } else {
+            scale = 1e-3; consumed = 1;
+        }
+        break;
+    case 'U': case 'u': scale = 1e-6; consumed = 1; break;
+    case 'N': case 'n': scale = 1e-9; consumed = 1; break;
+    case 'P': case 'p': scale = 1e-12; consumed = 1; break;
+    case 'F': case 'f': scale = 1e-15; consumed = 1; break;
+    default: break;
+    }
+
+    if (consumed > 0) {
+        *result *= scale;
+        end += consumed;
+    }
+
+    /* --- Second: strip trailing unit tag (V, A, W, Hz, F, H, Ohm, S) --- */
+    if (*end != '\0') {
+        char c = *end;
+        if (c == 'V' || c == 'v' || c == 'A' || c == 'a' ||
+            c == 'W' || c == 'w') {
+            end++;
+        } else if (c == 'H' || c == 'h') {
+            end++;
+            if (toupper_c(*end) == 'Z') end++;
+        } else if (c == 'F' || c == 'f') {
+            /* Only strip 'F' as unit if no scale was consumed above
+             * (otherwise "10f" = femto, "10F" = femto, but
+             *  value trailing bare "F" means Farad = as-is) */
+            if (consumed == 0) end++;
+        } else if (c == 'O') {
+            end++;
+            if (toupper_c(end[0]) == 'H' && toupper_c(end[1]) == 'M') end += 3;
+        } else if (c == 'S' || c == 's') {
+            end++;
+        }
+        /* Ignore remaining */
+    }
+
+    return true;
+}
+
+/* Parse key=value pairs from the inline parameter string.
+ * String is the remainder after devtype extraction, e.g.:
+ * "Vhigh=5V Vlow=0V Trise=10n Tfall=20n Ref=2.5V" */
+static LtspiceInlineParams ltspice_parse_inline_params(const char *s)
+{
+    LtspiceInlineParams p = {0};
+    char *tmp = copy(s);
+    char *ptr = tmp;
+    char *tok;
+
+    /* Defaults (used if the corresponding param is absent) */
+    p.vhigh = 5.0;
+    p.vlow = 0.0;
+    p.trise = 1e-9;
+    p.tfall = 1e-9;
+    p.ref = 2.5;
+    p.vt = 2.5;
+    p.td = 0.0;
+
+    while ((tok = gettok(&ptr)) != NULL) {
+        char *eq = strchr(tok, '=');
+        if (!eq) { tfree(tok); continue; }
+        *eq = '\0';
+        const char *key = tok;
+        const char *val = eq + 1;
+        double num = 0.0;
+        bool valid = parse_eng_number(val, &num);
+
+        /* Case-insensitive key matching */
+        char keyup[64], *kd = keyup;
+        int ki;
+        for (ki = 0; ki < (int)sizeof(keyup)-1 && key[ki]; ki++)
+            kd[ki] = toupper_c(key[ki]);
+        kd[ki] = '\0';
+
+        if (strcmp(kd, "VHIGH") == 0 && valid) {
+            p.vhigh = num; p.has_vhigh = true; p.present = true;
+        } else if (strcmp(kd, "VLOW") == 0 && valid) {
+            p.vlow = num; p.has_vlow = true; p.present = true;
+        } else if (strcmp(kd, "TRISE") == 0 && valid) {
+            p.trise = num; p.has_trise = true; p.present = true;
+        } else if (strcmp(kd, "TFALL") == 0 && valid) {
+            p.tfall = num; p.has_tfall = true; p.present = true;
+        } else if (strcmp(kd, "REF") == 0 && valid) {
+            p.ref = num; p.has_ref = true; p.present = true;
+        } else if (strcmp(kd, "VT") == 0 && valid) {
+            p.vt = num; p.has_vt = true; p.present = true;
+        } else if (strcmp(kd, "TD") == 0 && valid) {
+            p.td = num; p.has_td = true; p.present = true;
+        } else if (strcmp(kd, "CYCLES") == 0 && valid) {
+            p.cycles = num; p.has_cycles = true; p.present = true;
+        } else if (strcmp(kd, "MARK") == 0 && valid) {
+            p.mark = num; p.has_mark = true;
+        } else if (strcmp(kd, "SPACE") == 0 && valid) {
+            p.space = num; p.has_space = true;
+        } else if (strcmp(kd, "VREF") == 0 && valid) {
+            p.vref = num; p.has_vref = true;
+        } else if (strcmp(kd, "ROFF") == 0 && valid) {
+            p.roff = num; p.has_roff = true;
+        } else if (strcmp(kd, "RCLAMP") == 0 && valid) {
+            p.rclamp = num; p.has_rclamp = true;
+        }
+        tfree(tok);
+    }
+    tfree(tmp);
+    return p;
+}
+
+/* Check if an LTspice pin index is an input pin.
+ * LTspice mapping: pins 0-4 = inputs, pin 5 = reserved, pins 6-7 = outputs. */
+static bool ltspice_pin_is_input(int lt_pin)
+{
+    return lt_pin >= 0 && lt_pin <= 4;
+}
+
+/* Check if an LTspice pin index is an output pin.
+ * LTspice 8-pin fixed format:
+ *   Pins 0-4: Inputs
+ *   Pin 5:    Output (first/primary) for simple gates and DFF Q
+ *   Pin 6:    Output (secondary) for DFF !Q, or VCC+ for some devices
+ *   Pin 7:    Output (tertiary) or VCC-/GND for some devices */
+static bool ltspice_pin_is_output(int lt_pin)
+{
+    return lt_pin == 5 || lt_pin == 6 || lt_pin == 7;
+}
+
 void ltspice_a_device_transform(struct card *oldcard)
 {
     struct card *card;
@@ -2154,16 +3154,37 @@ void ltspice_a_device_transform(struct card *oldcard)
             continue;
 
         if (ciprefix(".model", cut_line)) {
-            /* Register existing model - use a copy to avoid corrupting card line */
+            /* Register existing model - parse type and params */
             char *tmp = copy(cut_line);
             char *str = tmp;
             str = nexttok(str); /* skip .model */
             char *modname = gettok(&str);
             if (modname) {
-                char *modeltype = gettok(&str);
-                if (modeltype) {
-                    modelsfound = insert_new_model(modelsfound, modname, "top");
-                    tfree(modeltype);
+                char *modeltype_full = gettok(&str);
+                if (modeltype_full) {
+                    char *type = NULL, *params = NULL;
+                    char *paren = strchr(modeltype_full, '(');
+                    if (paren) {
+                        *paren = '\0';
+                        type = copy(modeltype_full);
+                        char *p = paren + 1;
+                        char *end = strchr(p, ')');
+                        if (end) *end = '\0';
+                        params = copy(p);
+                    } else {
+                        type = copy(modeltype_full);
+                    }
+                    modelsfound = insert_new_model(
+                        modelsfound, modname, type, params, "top");
+                    /* Find the newly inserted node to set cardptr */
+                    {
+                        struct vsmodels *p = modelsfound;
+                        while (p && p->nextmodel) p = p->nextmodel;
+                        if (p) p->cardptr = card;
+                    }
+                    tfree(type);
+                    tfree(params);
+                    tfree(modeltype_full);
                 }
                 tfree(modname);
             }
@@ -2228,8 +3249,106 @@ void ltspice_a_device_transform(struct card *oldcard)
 
             /* Map device type to ngspice equivalent */
             char mapped_type[64];
-            const char *ngspice_type = ltspice_devtype_to_ngspice(devtype, mapped_type, sizeof(mapped_type));
             int pin_count = ltspice_device_pin_count(devtype);
+            bool from_model_card = false;
+            char *model_card_params = NULL;
+            struct card *model_card_ptr = NULL;
+
+            if (pin_count == 0) {
+                /* Check if devtype references a registered model card */
+                struct vsmodels *mdl = find_model_by_name(modelsfound, devtype, "top");
+                if (mdl && mdl->modeltype && strcmp(mdl->modeltype, "counter") == 0) {
+                    /* Model-card form COUNTER: .model MYMODEL counter(cycles=N) */
+                    model_card_params = mdl->params ? copy(mdl->params) : NULL;
+                    model_card_ptr = mdl->cardptr;
+                    tfree(devtype);
+                    devtype = copy("counter");
+                    pin_count = ltspice_device_pin_count(devtype);
+                    from_model_card = true;
+                }
+            }
+
+            if (pin_count == 0) {
+                /* Not a recognized LTspice A-device — pass through unchanged */
+                tfree(instname);
+                for (i = 0; i < 8; i++) tfree(pins[i]);
+                tfree(devtype);
+                tfree(linecopy);
+                continue;
+            }
+            const char *ngspice_type = ltspice_devtype_to_ngspice(devtype, mapped_type, sizeof(mapped_type));
+
+            /* Inline parameter bridge setup (declared here for cleanup scope) */
+            struct card *insert_pos = card;
+            LtspiceInlineParams iparams = {0};
+            bool do_bridge = false;
+            char *bridge_node[8] = {NULL};
+            char *analog_node[8] = {NULL};
+            int bridge_dir[8] = {0}; /* 0=none, 1=adc (input), 2=dac (output) */
+            int in_count = 0, out_count = 0;
+
+            {
+                char *pp = s;
+                while (*pp == ' ' || *pp == '\t') pp++;
+                if (*pp != '\0') {
+                    iparams = ltspice_parse_inline_params(s);
+                    do_bridge = iparams.present;
+                }
+            }
+
+            /* Analog codemodels — no ADC/DAC bridges */
+            if (strcmp(ngspice_type, "a_modulator") == 0 ||
+                strcmp(ngspice_type, "a_samplehold") == 0 ||
+                strcmp(ngspice_type, "a_varistor") == 0) {
+                do_bridge = false;
+            }
+
+            /* For model-card form COUNTER, extract cycles from model card params */
+            if (from_model_card && model_card_params) {
+                char pcopy[256];
+                int pc;
+                for (pc = 0; pc < 255 && model_card_params[pc]; pc++)
+                    pcopy[pc] = toupper_c(model_card_params[pc]);
+                pcopy[pc] = '\0';
+                char *eqs = strstr(pcopy, "CYCLES=");
+                if (!eqs) eqs = strstr(pcopy, "CYCLES =");
+                if (eqs) {
+                    char *val = eqs;
+                    while (*val && *val != '=') val++;
+                    if (*val == '=') val++;
+                    while (*val == ' ' || *val == '\t') val++;
+                    char *end = NULL;
+                    double cv = strtod(val, &end);
+                    if (end != val && cv > 0) {
+                        iparams.has_cycles = true;
+                        iparams.cycles = (double)(int)cv;
+                        iparams.present = false;
+                        do_bridge = false;
+                    }
+                }
+            }
+
+            if (do_bridge) {
+                int lt;
+                for (lt = 0; lt < 8; lt++) {
+                    if (!pins[lt] || strcmp(pins[lt], "0") == 0) continue;
+                    if (ltspice_pin_is_input(lt)) {
+                        char buf[64];
+                        snprintf(buf, sizeof(buf), "_lt%s_in%d_d", instname, in_count);
+                        bridge_node[lt] = copy(buf);
+                        analog_node[lt] = copy(pins[lt]);
+                        bridge_dir[lt] = 1;
+                        in_count++;
+                    } else if (ltspice_pin_is_output(lt)) {
+                        char buf[64];
+                        snprintf(buf, sizeof(buf), "_lt%s_out%d_d", instname, out_count);
+                        bridge_node[lt] = copy(buf);
+                        analog_node[lt] = copy(pins[lt]);
+                        bridge_dir[lt] = 2;
+                        out_count++;
+                    }
+                }
+            }
 
             if (pin_count > 0 && pin_count < 8) {
                 /* Build new A-device line with only the pins the model needs */
@@ -2258,19 +3377,30 @@ void ltspice_a_device_transform(struct card *oldcard)
                 if (strcmp(upper, "DLATCH") == 0 || strcmp(upper, "D_LATCH") == 0) {
                     /* d_dlatch: data enable set reset out Nout (6 ports, last 4 optional) */
                     ngspice_ports = 6;
-                } else if (strcmp(upper, "DFF") == 0 || strcmp(upper, "D_FF") == 0) {
+                } else if (strcmp(upper, "DFF") == 0 || strcmp(upper, "D_FF") == 0 || strcmp(upper, "DFLOP") == 0) {
                     /* d_dff: data clk set reset out Nout (6 ports, last 4 optional) */
                     ngspice_ports = 6;
                 } else if (strcmp(upper, "JKFF") == 0 || strcmp(upper, "JK_FF") == 0) {
                     /* d_jkff: j k clk set reset out Nout — but LTspice only has 4 pins */
                     /* Map: pin0=j, pin1=k, pin2=clk, pin3=q, pin6=nq */
                     ngspice_ports = 7;
-                } else if (strcmp(upper, "SRFF") == 0 || strcmp(upper, "SR_FF") == 0) {
+                } else if (strcmp(upper, "SRFF") == 0 || strcmp(upper, "SR_FF") == 0 || strcmp(upper, "SRFLOP") == 0) {
                     /* d_srff: s r clk set reset out Nout */
                     ngspice_ports = 7;
                 } else if (strcmp(upper, "COUNTER") == 0) {
                     /* d_fdiv: freq_in, freq_out (2 ports only) */
                     ngspice_ports = 2;
+                } else if (strcmp(upper, "SRLATCH") == 0 || strcmp(upper, "SR_LATCH") == 0) {
+                    /* d_srlatch: s r enable set reset out Nout (7 ports) */
+                    ngspice_ports = 7;
+                } else if (strcmp(upper, "SAMPLEHOLD") == 0) {
+                    /* a_samplehold: in, clk, out (3 ports) */
+                    ngspice_ports = 3;
+                } else if (strcmp(upper, "VARISTOR") == 0) {
+                    /* a_varistor: 3 XSPICE ports (in+ in/v, in- in/v, out inout/gd).
+                     * gd port uses 2 netlist nodes, so total nodes needed = 1+1+2 = 4.
+                     * Map: port0=in+(pin0), port1=in-(pin1), port2=out+(pin2), port3=out-(pin3). */
+                    ngspice_ports = 4;
                 }
 
                 if (use_vector) {
@@ -2278,6 +3408,24 @@ void ltspice_a_device_transform(struct card *oldcard)
                 }
 
                 /* Collect pins — for vectorized gates, inputs go in [] and output after */
+                /* When do_bridge is active, build a port→bridge mapping from the actual
+                 * pin layout (scanning bridge_dir in order) instead of using hardcoded
+                 * ltspice_pin_index which assumes fixed output positions. */
+                char *port_bridge[8] = {NULL}; /* maps ngspice port index → bridge node */
+                int bridge_input_idx = 0, bridge_output_idx = 0;
+                bool bridge_map_done = false;
+                if (do_bridge && use_vector) {
+                    for (int lt = 0; lt < 8; lt++) {
+                        if (bridge_dir[lt] == 1 && bridge_input_idx < pin_count - 1) {
+                            port_bridge[bridge_input_idx] = bridge_node[lt];
+                            bridge_input_idx++;
+                        } else if (bridge_dir[lt] == 2 && bridge_output_idx < 2) {
+                            port_bridge[pin_count - 1 + bridge_output_idx] = bridge_node[lt];
+                            bridge_output_idx++;
+                        }
+                    }
+                    bridge_map_done = true;
+                }
                 for (i = 0; i < ngspice_ports; i++) {
                     int lt_pin;
                     /* Map ngspice port index back to LTspice pin position */
@@ -2287,16 +3435,16 @@ void ltspice_a_device_transform(struct card *oldcard)
                         else if (i == 1) lt_pin = 1;   /* enable */
                         else if (i == 2) lt_pin = -1;  /* set (not in LTspice) */
                         else if (i == 3) lt_pin = -1;  /* reset (not in LTspice) */
-                        else if (i == 4) lt_pin = 6;   /* out */
-                        else lt_pin = 7;                /* Nout */
-                    } else if (strcmp(upper, "DFF") == 0 || strcmp(upper, "D_FF") == 0) {
+                        else if (i == 4) lt_pin = 6;   /* out (Q at pin 6) */
+                        else lt_pin = 7;                /* Nout (!Q at pin 7) */
+                    } else if (strcmp(upper, "DFF") == 0 || strcmp(upper, "D_FF") == 0 || strcmp(upper, "DFLOP") == 0) {
                         /* LTspice: d=pin0, clk=pin1, q=pin6, nq=pin7. ngspice: data,clk,set,reset,out,Nout */
                         if (i == 0) lt_pin = 0;       /* data */
                         else if (i == 1) lt_pin = 1;   /* clk */
                         else if (i == 2) lt_pin = -1;  /* set */
                         else if (i == 3) lt_pin = -1;  /* reset */
-                        else if (i == 4) lt_pin = 6;   /* out */
-                        else lt_pin = 7;                /* Nout */
+                        else if (i == 4) lt_pin = 6;   /* out (Q at pin 6) */
+                        else lt_pin = 7;                /* Nout (!Q at pin 7) */
                     } else if (strcmp(upper, "JKFF") == 0 || strcmp(upper, "JK_FF") == 0) {
                         /* LTspice: j=pin0, k=pin1, clk=pin2, q=pin6, nq=pin7. ngspice: j,k,clk,set,reset,out,Nout */
                         if (i == 0) lt_pin = 0;       /* j */
@@ -2304,36 +3452,83 @@ void ltspice_a_device_transform(struct card *oldcard)
                         else if (i == 2) lt_pin = 2;   /* clk */
                         else if (i == 3) lt_pin = -1;  /* set */
                         else if (i == 4) lt_pin = -1;  /* reset */
-                        else if (i == 5) lt_pin = 6;   /* out */
-                        else lt_pin = 7;                /* Nout */
-                    } else if (strcmp(upper, "SRFF") == 0 || strcmp(upper, "SR_FF") == 0) {
+                        else if (i == 5) lt_pin = 6;   /* out (Q at pin 6) */
+                        else lt_pin = 7;                /* Nout (!Q at pin 7) */
+                    } else if (strcmp(upper, "SRFF") == 0 || strcmp(upper, "SR_FF") == 0 || strcmp(upper, "SRFLOP") == 0) {
                         /* LTspice: s=pin0, r=pin1, q=pin6, nq=pin7 */
                         if (i == 0) lt_pin = 0;       /* s */
                         else if (i == 1) lt_pin = 1;   /* r */
                         else if (i == 2) lt_pin = -1;  /* clk (not used by d_srff) */
                         else if (i == 3) lt_pin = -1;  /* set */
                         else if (i == 4) lt_pin = -1;  /* reset */
-                        else if (i == 5) lt_pin = 6;   /* out */
-                        else lt_pin = 7;                /* Nout */
+                        else if (i == 5) lt_pin = 6;   /* out (Q at pin 6) */
+                        else lt_pin = 7;                /* Nout (!Q at pin 7) */
+                    } else if (strcmp(upper, "SRLATCH") == 0 || strcmp(upper, "SR_LATCH") == 0) {
+                        /* d_srlatch: s r enable set reset out Nout (7 ports) */
+                        /* LTspice: s=pin0, r=pin1, q=pin6, nq=pin7 */
+                        if (i == 0) lt_pin = 0;       /* s */
+                        else if (i == 1) lt_pin = 1;   /* r */
+                        else if (i == 2) lt_pin = -1;  /* enable (not in LTspice) */
+                        else if (i == 3) lt_pin = -1;  /* set (not in LTspice) */
+                        else if (i == 4) lt_pin = -1;  /* reset (not in LTspice) */
+                        else if (i == 5) lt_pin = 6;   /* out (Q at pin 6) */
+                        else lt_pin = 7;                /* Nout (!Q at pin 7) */
+                    } else if (strcmp(upper, "TFF") == 0 || strcmp(upper, "T_FF") == 0) {
+                        /* d_tff: t clk set reset out Nout (6 ports) */
+                        /* LTspice: t=pin0, clk=pin1, q=pin6, nq=pin7 */
+                        if (i == 0) lt_pin = 0;       /* t */
+                        else if (i == 1) lt_pin = 1;   /* clk */
+                        else if (i == 2) lt_pin = -1;  /* set (not in LTspice) */
+                        else if (i == 3) lt_pin = -1;  /* reset (not in LTspice) */
+                        else if (i == 4) lt_pin = 6;   /* out (Q at pin 6) */
+                        else lt_pin = 7;                /* Nout (!Q at pin 7) */
                     } else if (strcmp(upper, "COUNTER") == 0) {
                         /* d_fdiv: freq_in, freq_out (2 ports) */
                         /* LTspice: in=pin0, out=pin6 */
                         if (i == 0) lt_pin = 0;       /* freq_in */
                         else lt_pin = 6;               /* freq_out */
+                    } else if (strcmp(upper, "SAMPLEHOLD") == 0) {
+                        /* a_samplehold: in, clk, out (3 ports) */
+                        /* LTspice: in=pin0, clk=pin2, out=pin6 */
+                        if (i == 0) lt_pin = 0;       /* in */
+                        else if (i == 1) lt_pin = 2;   /* clk */
+                        else lt_pin = 6;                /* out */
+                    } else if (strcmp(upper, "VARISTOR") == 0) {
+                        /* a_varistor: in+, in-, out+, out- (4 ports) */
+                        /* LTspice: in+=pin0, in-=pin1, out+=pin2, out-=pin3 */
+                        if (i == 0) lt_pin = 0;       /* in+ */
+                        else if (i == 1) lt_pin = 1;   /* in- */
+                        else if (i == 2) lt_pin = 2;   /* out+ */
+                        else lt_pin = 3;                /* out- */
                     } else {
                         lt_pin = ltspice_pin_index(devtype, i);
+                    }
+
+                    /* Determine the node string for this port */
+                    char *port_val = NULL;
+                    if (bridge_map_done && port_bridge[i]) {
+                        port_val = port_bridge[i];
+                    } else if (lt_pin >= 0 && lt_pin < 8) {
+                        if (bridge_node[lt_pin])
+                            port_val = bridge_node[lt_pin];
+                        else if (pins[lt_pin])
+                            port_val = pins[lt_pin];
+                        else
+                            port_val = "0";
+                    } else {
+                        port_val = "0";
                     }
 
                     /* For vectorized gates, inputs go in [], output after */
                     if (use_vector && i == pin_count - 1) {
                         strcat(node_str, "] ");
+                        strcat(node_str, port_val);
                     } else if (i > 0) {
                         strcat(node_str, " ");
+                        strcat(node_str, port_val);
+                    } else {
+                        strcat(node_str, port_val);
                     }
-                    if (lt_pin >= 0 && lt_pin < 8 && pins[lt_pin])
-                        strcat(node_str, pins[lt_pin]);
-                    else
-                        strcat(node_str, "0");
                 }
 
                 /* Create model name: a<instance>_<type> */
@@ -2346,27 +3541,83 @@ void ltspice_a_device_transform(struct card *oldcard)
                 if (strcmp(upper, "DLATCH") == 0 || strcmp(upper, "D_LATCH") == 0) {
                     /* XSPICE d_dlatch: data enable set reset out Nout */
                     new_line = tprintf("%s %s %s NULL NULL %s %s %s",
-                             instname, pins[0], pins[1], pins[6], pins[7], model_name);
-                }
-                else if (strcmp(upper, "SRLATCH") == 0 || strcmp(upper, "SR_LATCH") == 0) {
-                    /* XSPICE d_srlatch: s r set reset out Nout */
-                    new_line = tprintf("%s %s %s NULL NULL %s %s %s",
-                             instname, pins[0], pins[1], pins[6], pins[7], model_name);
-                }
-                else if (strcmp(upper, "TFF") == 0 || strcmp(upper, "T_FF") == 0) {
-                    /* XSPICE d_tff: t clk set reset out Nout */
-                    new_line = tprintf("%s %s %s NULL NULL %s %s %s",
-                             instname, pins[0], pins[1], pins[6], pins[7], model_name);
+                             instname,
+                             bridge_node[0] ? bridge_node[0] : pins[0],
+                             bridge_node[1] ? bridge_node[1] : pins[1],
+                             bridge_node[6] ? bridge_node[6] : pins[6],
+                             bridge_node[7] ? bridge_node[7] : pins[7],
+                             model_name);
                 }
                 else if (strcmp(upper, "TRISTATE") == 0) {
                     /* XSPICE d_tristate: in enable out */
                     new_line = tprintf("%s %s %s %s %s",
-                             instname, pins[0], pins[1], pins[6], model_name);
+                             instname,
+                             bridge_node[0] ? bridge_node[0] : pins[0],
+                             bridge_node[1] ? bridge_node[1] : pins[1],
+                             bridge_node[6] ? bridge_node[6] : pins[6],
+                             model_name);
                 }
 
                 /* Replace the original line */
                 tfree(card->line);
                 card->line = new_line;
+                /* Insert explicit bridge cards when inline params are present */
+                if (do_bridge) {
+                    /* Build ADC bridge (input pins: analog -> digital) */
+                    if (in_count > 0) {
+                        char adc_an[256] = "", adc_dig[256] = "";
+                        int lt, first = 1;
+                        for (lt = 0; lt < 8; lt++) {
+                            if (bridge_dir[lt] == 1) {
+                                if (!first) { strcat(adc_an, " "); strcat(adc_dig, " "); }
+                                strcat(adc_an, analog_node[lt]);
+                                strcat(adc_dig, bridge_node[lt]);
+                                first = 0;
+                            }
+                        }
+                        double thresh = iparams.has_ref ? iparams.ref :
+                                        (iparams.has_vt ? iparams.vt :
+                                         (iparams.vhigh + iparams.vlow) / 2.0);
+                        char adc_model[512], adc_inst[512];
+                        snprintf(adc_model, sizeof(adc_model),
+                                 ".model _lt_m%s_adc adc_bridge(in_low = %.15g in_high = %.15g)",
+                                 instname, thresh, thresh);
+                        snprintf(adc_inst, sizeof(adc_inst),
+                                 "a_lt%s_adc [ %s ] [ %s ] _lt_m%s_adc",
+                                 instname, adc_an, adc_dig, instname);
+                        insert_pos = insert_new_line(insert_pos, copy(adc_model), 0,
+                                                     card->linenum_orig, card->linesource);
+                        insert_pos = insert_new_line(insert_pos, copy(adc_inst), 0,
+                                                     card->linenum_orig, card->linesource);
+                    }
+
+                    /* Build DAC bridge (output pins: digital -> analog) */
+                    if (out_count > 0) {
+                        char dac_dig[256] = "", dac_an[256] = "";
+                        int lt, first = 1;
+                        for (lt = 0; lt < 8; lt++) {
+                            if (bridge_dir[lt] == 2) {
+                                if (!first) { strcat(dac_dig, " "); strcat(dac_an, " "); }
+                                strcat(dac_dig, bridge_node[lt]);
+                                strcat(dac_an, analog_node[lt]);
+                                first = 0;
+                            }
+                        }
+                        char dac_model[512], dac_inst[512];
+                        snprintf(dac_model, sizeof(dac_model),
+                                 ".model _lt_m%s_dac dac_bridge(out_low = %.15g out_high = %.15g"
+                                 " t_rise = %.15g t_fall = %.15g)",
+                                 instname, iparams.vlow, iparams.vhigh,
+                                 iparams.trise, iparams.tfall);
+                        snprintf(dac_inst, sizeof(dac_inst),
+                                 "a_lt%s_dac [ %s ] [ %s ] _lt_m%s_dac",
+                                 instname, dac_dig, dac_an, instname);
+                        insert_pos = insert_new_line(insert_pos, copy(dac_model), 0,
+                                                     card->linenum_orig, card->linesource);
+                        insert_pos = insert_new_line(insert_pos, copy(dac_inst), 0,
+                                                     card->linenum_orig, card->linesource);
+                    }
+                }
 
                 /* Add .model card if not already present */
                 if (!find_a_model(modelsfound, model_name, "top")) {
@@ -2381,12 +3632,19 @@ void ltspice_a_device_transform(struct card *oldcard)
                     upper = buf;
 
                     if (strcmp(upper, "COUNTER") == 0) {
-                        snprintf(model_line, sizeof(model_line),
-                                 ".model %s d_fdiv (i_count = 0)", model_name);
+                        if (iparams.has_cycles) {
+                            int c = (int)iparams.cycles;
+                            snprintf(model_line, sizeof(model_line),
+                                     ".model %s d_fdiv (div_factor = %d high_cycles = %d)",
+                                     model_name, 2*c, c);
+                        } else {
+                            snprintf(model_line, sizeof(model_line),
+                                     ".model %s d_fdiv (i_count = 0)", model_name);
+                        }
                     }
                     else if (strcmp(upper, "SCHMITT") == 0 || strcmp(upper, "SCHMITT_BUF") == 0) {
                         snprintf(model_line, sizeof(model_line),
-                                 ".model %s d_buffer (vhigh = 5 vlow = 0 thresh = 2.5)", model_name);
+                                 ".model %s d_buffer ()", model_name);
                     }
                     else if (strcmp(upper, "BUF") == 0 || strcmp(upper, "BUFFER") == 0) {
                         snprintf(model_line, sizeof(model_line),
@@ -2420,7 +3678,7 @@ void ltspice_a_device_transform(struct card *oldcard)
                         snprintf(model_line, sizeof(model_line),
                                  ".model %s d_xnor ()", model_name);
                     }
-                    else if (strcmp(upper, "DFF") == 0 || strcmp(upper, "D_FF") == 0) {
+                    else if (strcmp(upper, "DFF") == 0 || strcmp(upper, "D_FF") == 0 || strcmp(upper, "DFLOP") == 0) {
                         snprintf(model_line, sizeof(model_line),
                                  ".model %s d_dff ()", model_name);
                     }
@@ -2428,7 +3686,7 @@ void ltspice_a_device_transform(struct card *oldcard)
                         snprintf(model_line, sizeof(model_line),
                                  ".model %s d_jkff ()", model_name);
                     }
-                    else if (strcmp(upper, "SRFF") == 0 || strcmp(upper, "SR_FF") == 0) {
+                    else if (strcmp(upper, "SRFF") == 0 || strcmp(upper, "SR_FF") == 0 || strcmp(upper, "SRFLOP") == 0) {
                         snprintf(model_line, sizeof(model_line),
                                  ".model %s d_srff ()", model_name);
                     }
@@ -2436,21 +3694,69 @@ void ltspice_a_device_transform(struct card *oldcard)
                         snprintf(model_line, sizeof(model_line),
                                  ".model %s d_dlatch ()", model_name);
                     }
+                    else if (strcmp(upper, "SRLATCH") == 0 || strcmp(upper, "SR_LATCH") == 0) {
+                        snprintf(model_line, sizeof(model_line),
+                                 ".model %s d_srlatch ()", model_name);
+                    }
+                    else if (strcmp(upper, "TFF") == 0 || strcmp(upper, "T_FF") == 0) {
+                        snprintf(model_line, sizeof(model_line),
+                                 ".model %s d_tff ()", model_name);
+                    }
+                    else if (strcmp(upper, "PHASEDET") == 0 || strcmp(upper, "PHIDET") == 0) {
+                        snprintf(model_line, sizeof(model_line),
+                                 ".model %s d_phasedet ()", model_name);
+                    }
+                    else if (strcmp(upper, "MODULATOR") == 0) {
+                        double mk = iparams.has_mark ? iparams.mark : 1e6;
+                        double sp = iparams.has_space ? iparams.space : 5e5;
+                        snprintf(model_line, sizeof(model_line),
+                                 ".model %s modulator(mark=%.15g space=%.15g)",
+                                 model_name, mk, sp);
+                    }
+                    else if (strcmp(upper, "SAMPLEHOLD") == 0) {
+                        double thresh = iparams.has_vt ? iparams.vt : 2.5;
+                        double hv = iparams.has_vhigh ? iparams.vhigh : 5.0;
+                        double lv = iparams.has_vlow ? iparams.vlow : 0.0;
+                        snprintf(model_line, sizeof(model_line),
+                                 ".model %s samplehold(vt=%.15g vhigh=%.15g vlow=%.15g)",
+                                 model_name, thresh, hv, lv);
+                    }
+                    else if (strcmp(upper, "VARISTOR") == 0) {
+                        double vr = iparams.has_vref ? iparams.vref : 1.0;
+                        double ro = iparams.has_roff ? iparams.roff : 1e12;
+                        double rc = iparams.has_rclamp ? iparams.rclamp : 1.0;
+                        snprintf(model_line, sizeof(model_line),
+                                 ".model %s varistor(vref=%.15g roff=%.15g rclamp=%.15g)",
+                                 model_name, vr, ro, rc);
+                    }
                     else {
                         /* Fallback: generic buffer */
                         snprintf(model_line, sizeof(model_line),
                                  ".model %s d_buffer ()", model_name);
                     }
 
-                    /* Insert model card after the A-device line */
-                    card = insert_new_line(card, copy(model_line), 0,
-                                          card->linenum_orig, card->linesource);
+                    if (from_model_card && model_card_ptr) {
+                        /* Replace user's .model card in-place */
+                        tfree(model_card_ptr->line);
+                        model_card_ptr->line = copy(model_line);
+                    } else {
+                        /* Insert model card after bridges (or after A-device line if no bridges) */
+                        card = insert_new_line(insert_pos, copy(model_line), 0,
+                                              card->linenum_orig, card->linesource);
+                    }
+                } else {
+                    if (do_bridge) card = insert_pos;
                 }
             }
 
             /* Cleanup */
             tfree(instname);
+            tfree(model_card_params);
             for (i = 0; i < 8 && pins[i]; i++) tfree(pins[i]);
+            for (i = 0; i < 8; i++) {
+                if (bridge_node[i]) tfree(bridge_node[i]);
+                if (analog_node[i]) tfree(analog_node[i]);
+            }
             tfree(devtype);
             tfree(linecopy);
         }
