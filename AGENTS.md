@@ -86,14 +86,15 @@ The following LTspice/PSpice expression transforms are applied in `ltspice_compa
 
 | Category | Count | % | Notes |
 |----------|-------|---|-------|
-| PASS | 350 | 82.0% | Clean parse + .op |
-| FATAL_OTHER | 55 | 12.9% | Missing models, divide-by-zero params, LTspice implicit params, POLY errors |
+| PASS | 351 | 82.2% | Clean parse + .op |
+| FATAL_OTHER | 54 | 12.6% | Missing models, divide-by-zero params, LTspice implicit params, POLY errors |
 | MATRIX | 16 | 3.7% | Singular matrix (expected with all pins grounded); includes H11L1 now |
 | MODEL | 2 | 0.5% | ILPI-137A, acpl-c87at — model not in .lib |
 | OTHER | 4 | 0.9% | Measurement subcircuits needing specific analyses |
 
 ### Key transforms for FATAL_OTHER resolution
 
+- **Non-ASCII dashes → ASCII `-`** (added in `ltspice_compat()`): Replaces EN DASH (U+2013), EM DASH (U+2014), and MINUS SIGN (U+2212) with ASCII hyphen-minus. Fixes `spice2poly` "Bad real value" errors when POLY elements use Unicode dashes instead of regular minus signs. Fixed: TLV226x (`FB` POLY(5) with `–10E6`).
 - **`{identifier}` stripped in `.param` lines** (added in `ltspice_compat()` at line 2063): LTspice allows `{param_name}` inside `.param` statements, but ngspice requires bare identifiers. Only strips braces around simple identifiers (not around expressions with operators). Fixed: H11L1 (`Vh0=({ion}-{ioff})/({ion}+{ioff})/2`).
 - **`&`→`&&`, `|`→`||`** (added in `ltspice_compat()`): fixes YYparse errors (6 cases)
 - **`if((...))` extra-wrapping** (in `replace_if_ternary()`): handles `if((cond, tval, fval))` pattern by detecting commas at depth=2. Replaced the flawed B-source-only `if((` fix (which had false positives on `if(((cond)&&(cond2))>0.5,...)`).

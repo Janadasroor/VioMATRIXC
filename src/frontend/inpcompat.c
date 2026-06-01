@@ -2021,6 +2021,41 @@ struct card *ltspice_compat(struct card *oldcard)
     /* handle TABLE functions in G and E sources */
     replace_table(oldcard);
 
+    /* Replace non-ASCII dash/minus characters with ASCII hyphen-minus.
+     * LTspice subcircuits sometimes contain EN DASH (U+2013) or other
+     * Unicode dash characters used as minus signs in numeric values,
+     * which ngspice cannot parse (e.g. spice2poly "Bad real value"). */
+    for (card = oldcard; card; card = card->nextcard) {
+        char *cl = card->line;
+        if (!cl) continue;
+        if (strstr(cl, "\xe2\x80\x93") || strstr(cl, "\xe2\x80\x94") || strstr(cl, "\xe2\x88\x92")) {
+            size_t len = strlen(cl);
+            char *result = tmalloc(len + 1);
+            char *dst = result;
+            char *src = cl;
+            while (*src) {
+                if ((unsigned char)src[0] == 0xe2 && (unsigned char)src[1] == 0x80 &&
+                    (unsigned char)src[2] == 0x93) {
+                    *dst++ = '-';
+                    src += 3;
+                } else if ((unsigned char)src[0] == 0xe2 && (unsigned char)src[1] == 0x80 &&
+                           (unsigned char)src[2] == 0x94) {
+                    *dst++ = '-';
+                    src += 3;
+                } else if ((unsigned char)src[0] == 0xe2 && (unsigned char)src[1] == 0x88 &&
+                           (unsigned char)src[2] == 0x92) {
+                    *dst++ = '-';
+                    src += 3;
+                } else {
+                    *dst++ = *src++;
+                }
+            }
+            *dst = '\0';
+            tfree(card->line);
+            card->line = result;
+        }
+    }
+
     /* Replace PSpice/LTspice & (logical AND) with ngspice &&, and | (logical OR) with ||.
      * These operators are used in B-source, E-source, .param, .func expressions.
      * Safe: no lines in the library use leading &/| for continuation (only + is used). */
