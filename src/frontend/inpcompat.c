@@ -76,9 +76,12 @@ static char *replace_if_ternary(const char *line)
         if (!p) p = strstr(src, "If(");
         if (!p) break; /* No more IF() calls */
 
-        /* Find the matching closing paren */
+        /* Find the matching closing paren.
+         * First try normal parsing (commas at depth=1).
+         * If that fails, try extra wrapping (commas at depth=2): if((cond, tval, fval)). */
         const char *cp = p + 3;
         int depth = 1;
+        int extra_wrap = 0;
         const char *comma1 = NULL, *comma2 = NULL;
         while (*cp && depth > 0) {
             if (*cp == '(') depth++;
@@ -89,6 +92,32 @@ static char *replace_if_ternary(const char *line)
             }
             cp++;
         }
+
+        if (!comma1 || !comma2 || cp[-1] != ')') {
+            /* Normal parsing failed — try extra wrapping: if((cond, tval, fval)).
+             * The extra pair wraps all three arguments, so commas are at depth=2.
+             * Depth d2=1 represents the if() open paren, d2=2 is inside the wrapper. */
+            const char *cp2 = p + 3;
+            int d2 = 1;
+            const char *cm1 = NULL, *cm2 = NULL;
+            while (*cp2 && d2 > 0) {
+                if (*cp2 == '(') d2++;
+                else if (*cp2 == ')') d2--;
+                if (d2 == 2) {
+                    if (*cp2 == ',' && !cm1) cm1 = cp2;
+                    else if (*cp2 == ',' && cm1 && !cm2) cm2 = cp2;
+                }
+                cp2++;
+            }
+            /* Verify: commas found inside the extra wrapper, and the if() close paren exists */
+            if (cm1 && cm2 && cp2[-1] == ')') {
+                extra_wrap = 1;
+                comma1 = cm1;
+                comma2 = cm2;
+                cp = cp2;  /* cp points past the if()'s close paren */
+            }
+        }
+
         if (!comma1 || !comma2 || cp[-1] != ')') {
             /* Malformed — copy verbatim and continue */
             size_t skip = (size_t)(p + 3 - src);
@@ -105,12 +134,22 @@ static char *replace_if_ternary(const char *line)
         }
 
         /* Extract and strip the three arguments */
-        const char *cond_start = p + 3;
-        const char *cond_end = comma1;
-        const char *true_start = comma1 + 1;
-        const char *true_end = comma2;
-        const char *false_start = comma2 + 1;
-        const char *false_end = cp - 1;
+        const char *cond_start, *cond_end, *true_start, *true_end, *false_start, *false_end;
+        if (extra_wrap) {
+            cond_start = p + 4;
+            cond_end = comma1;
+            true_start = comma1 + 1;
+            true_end = comma2;
+            false_start = comma2 + 1;
+            false_end = cp - 2;
+        } else {
+            cond_start = p + 3;
+            cond_end = comma1;
+            true_start = comma1 + 1;
+            true_end = comma2;
+            false_start = comma2 + 1;
+            false_end = cp - 1;
+        }
 
         while (cond_start < cond_end && (*cond_start == ' ' || *cond_start == '\t')) cond_start++;
         while (cond_end > cond_start && (cond_end[-1] == ' ' || cond_end[-1] == '\t')) cond_end--;
@@ -1982,7 +2021,89 @@ struct card *ltspice_compat(struct card *oldcard)
     /* handle TABLE functions in G and E sources */
     replace_table(oldcard);
 
-    /* handle LTspice "load" keyword on current sources (constant-power load) */
+    /* Replace PSpice/LTspice & (logical AND) with ngspice &&, and | (logical OR) with ||.
+     * These operators are used in B-source, E-source, .param, .func expressions.
+     * Safe: no lines in the library use leading &/| for continuation (only + is used). */
+    for (card = oldcard; card; card = card->nextcard) {
+        char *cl = card->line;
+        if (!cl) continue;
+        if (cl[0] == '*' || cl[0] == '#') continue;  /* comment lines */
+        /* Only process lines that likely contain expressions */
+        char c0 = tolower_c(cl[0]);
+        if (c0 != 'b' && c0 != 'e' && c0 != 'g' && c0 != '.' && c0 != 'h' && c0 != 'f')
+            continue;
+
+        size_t len = strlen(cl);
+        /* Check if we actually need to modify anything */
+        char *amp = strchr(cl, '&');
+        char *bar = strchr(cl, '|');
+        if (!amp && !bar) continue;
+
+        char *result = tmalloc(len * 2 + 1);
+        char *dst = result;
+        char *src = cl;
+        while (*src) {
+            if (*src == '&' && src[1] != '&') {
+                *dst++ = '&';
+                *dst++ = '&';
+                src++;
+            } else if (*src == '|' && src[1] != '|') {
+                *dst++ = '|';
+                *dst++ = '|';
+                src++;
+            } else {
+                *dst++ = *src++;
+            }
+        }
+        *dst = '\0';
+        tfree(card->line);
+        card->line = result;
+    }
+
+    /* Replace LTspice scale notation: a digit after a scale suffix (u/m/k/M/G/T)
+     * is treated as fractional part:  2u6 = 2.6e-6, 1m5 = 1.5e-3, 3k3 = 3.3e+3, etc.
+     * ngspice needs the decimal point: 2.6u, 1.5m, 3.3k, etc. */
+    for (card = oldcard; card; card = card->nextcard) {
+        char *cl = card->line;
+        if (!cl) continue;
+        if (cl[0] == '*' || cl[0] == '#') continue;
+        int has_match = 0;
+        char *p = cl;
+        while (*p) {
+            if (isdigit_c(*p) && *(p+1) && *(p+2)) {
+                char scale = *(p+1);
+                if (strchr("uUmMkKgGtT", scale) && isdigit_c(*(p+2))) {
+                    has_match = 1;
+                    break;
+                }
+            }
+            p++;
+        }
+        if (!has_match) continue;
+        size_t len = strlen(cl);
+        char *result = tmalloc(len * 2 + 1);
+        char *dst = result;
+        char *src = cl;
+        while (*src) {
+            if (isdigit_c(*src) && *(src+1) && *(src+2)) {
+                char scale = *(src+1);
+                if (strchr("uUmMkKgGtT", scale) && isdigit_c(*(src+2))) {
+                    while (isdigit_c(*src)) *dst++ = *src++;
+                    char scale_ch = *src++;
+                    *dst++ = '.';
+                    while (isdigit_c(*src)) *dst++ = *src++;
+                    *dst++ = scale_ch;
+                    continue;
+                }
+            }
+            *dst++ = *src++;
+        }
+        *dst = '\0';
+        tfree(card->line);
+        card->line = result;
+    }
+
+    /* UpLim/DnLim are handled by injected .func definitions below (line 2567). */
     for (card = oldcard; card; card = card->nextcard) {
         char *cl = card->line;
         if (!cl) continue;
@@ -2038,6 +2159,179 @@ struct card *ltspice_compat(struct card *oldcard)
                 memmove(p + 3, p + 5, strlen(p + 5) + 1);
             }
         }
+    }
+
+    /* Work around ngspice bug: subcircuit names containing hyphens are not
+     * properly registered when the subcircuit has parameters (inline or .param).
+     * Rename by replacing hyphens with underscores, and update X instance refs.
+     * Also move inline default params from .subckt lines to .param cards. */
+    {
+        /* First pass: collect renames */
+        struct {
+            char oldname[256];
+            char newname[256];
+        } renames[64];
+        int nrenames = 0;
+
+        for (card = oldcard; card; card = card->nextcard) {
+            char *cl = card->line;
+            if (!cl) continue;
+            if (!ciprefix(".subckt", cl) && !ciprefix(".macro", cl)) continue;
+
+            char linebuf[4096];
+            strncpy(linebuf, cl, sizeof(linebuf) - 1);
+            linebuf[sizeof(linebuf) - 1] = '\0';
+
+            int nt = 0;
+            char *tokens[64];
+            char *tok = strtok(linebuf, " \t");
+            while (tok != NULL && nt < 64) {
+                tokens[nt++] = tok;
+                tok = strtok(NULL, " \t");
+            }
+            if (nt < 3) continue;
+
+            char *subname = tokens[1];
+
+            /* Check if name has hyphens */
+            if (!strchr(subname, '-') && !strchr(subname, '~'))
+                continue;
+
+            if (nrenames >= 64) continue;
+
+            strncpy(renames[nrenames].oldname, subname, 256);
+            renames[nrenames].oldname[255] = '\0';
+
+            /* Build new name: replace hyphens and tildes with underscores */
+            int di = 0;
+            for (int si = 0; renames[nrenames].oldname[si]; si++) {
+                char c = renames[nrenames].oldname[si];
+                if (c == '-' || c == '~')
+                    c = '_';
+                if (di < 255)
+                    renames[nrenames].newname[di++] = c;
+            }
+            renames[nrenames].newname[di] = '\0';
+            nrenames++;
+        }
+
+        /* Second pass: apply renames to .subckt/.macro lines */
+        if (nrenames > 0) {
+            for (card = oldcard; card; card = card->nextcard) {
+                char *cl = card->line;
+                if (!cl) continue;
+
+                /* Check .subckt/.macro lines */
+                if (ciprefix(".subckt", cl) || ciprefix(".macro", cl)) {
+                    for (int i = 0; i < nrenames; i++) {
+                        /* .subckt=7 chars, .macro=6 chars */
+                    char *pos = cl + (ciprefix(".subckt", cl) ? 7 : 6);
+                    /* skip whitespace */
+                        /* skip whitespace */
+                        while (*pos == ' ' || *pos == '\t') pos++;
+                        /* Check if name matches */
+                        size_t nlen = strlen(renames[i].oldname);
+                        if (strncmp(pos, renames[i].oldname, nlen) == 0 &&
+                            (pos[nlen] == ' ' || pos[nlen] == '\t' || pos[nlen] == '\0')) {
+                            /* Replace oldname with newname */
+                            char *newcl = tmalloc(strlen(cl) - nlen + strlen(renames[i].newname) + 1);
+                            size_t prefix_len = pos - cl;
+                            memcpy(newcl, cl, prefix_len);
+                            strcpy(newcl + prefix_len, renames[i].newname);
+                            strcat(newcl, pos + nlen);
+                            tfree(card->line);
+                            card->line = newcl;
+                            break;
+                        }
+                    }
+                }
+
+                /* Check X instance lines */
+                if (tolower_c(cl[0]) == 'x') {
+                    for (int i = 0; i < nrenames; i++) {
+                        /* Look for the subcircuit name as the last token */
+                        char *last = cl + strlen(cl);
+                        while (last > cl && (last[-1] == ' ' || last[-1] == '\t'))
+                            last--;
+                        char *start = last;
+                        while (start > cl && start[-1] != ' ' && start[-1] != '\t')
+                            start--;
+                        size_t nlen = strlen(renames[i].oldname);
+                        if ((size_t)(last - start) == nlen &&
+                            strncmp(start, renames[i].oldname, nlen) == 0) {
+                            char *newcl = tmalloc(strlen(cl) - nlen + strlen(renames[i].newname) + 1);
+                            size_t prefix_len = start - cl;
+                            memcpy(newcl, cl, prefix_len);
+                            strcpy(newcl + prefix_len, renames[i].newname);
+                            strcpy(newcl + prefix_len + strlen(renames[i].newname), last);
+                            tfree(card->line);
+                            card->line = newcl;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /* Move inline default params from .subckt/.macro lines to .param cards.
+     * This avoids issues with ngspice's handling of inline params. */
+    for (card = oldcard; card; card = card->nextcard) {
+        char *cl = card->line;
+        if (!cl) continue;
+        if (!ciprefix(".subckt", cl) && !ciprefix(".macro", cl)) continue;
+
+        char linebuf[4096];
+        strncpy(linebuf, cl, sizeof(linebuf) - 1);
+        linebuf[sizeof(linebuf) - 1] = '\0';
+
+        int nt = 0;
+        char *tokens[64];
+        char *tok = strtok(linebuf, " \t");
+        while (tok != NULL && nt < 64) {
+            tokens[nt++] = tok;
+            tok = strtok(NULL, " \t");
+        }
+        if (nt < 3) continue;
+
+        int first_param = -1;
+        for (int i = 2; i < nt; i++) {
+            if (strchr(tokens[i], '=')) {
+                first_param = i;
+                break;
+            }
+        }
+        if (first_param < 0) continue;
+
+        size_t newsize = strlen(tokens[0]) + 1 + strlen(tokens[1]) + 1;
+        for (int i = 2; i < first_param; i++)
+            newsize += strlen(tokens[i]) + 1;
+        char *newsub = tmalloc(newsize);
+        newsub[0] = '\0';
+        strcat(newsub, tokens[0]);
+        strcat(newsub, " ");
+        strcat(newsub, tokens[1]);
+        for (int i = 2; i < first_param; i++) {
+            strcat(newsub, " ");
+            strcat(newsub, tokens[i]);
+        }
+
+        size_t paramsize = 7;
+        for (int i = first_param; i < nt; i++)
+            paramsize += strlen(tokens[i]) + 1;
+        char *paramline = tmalloc(paramsize);
+        strcpy(paramline, ".param ");
+        for (int i = first_param; i < nt; i++) {
+            if (i > first_param) strcat(paramline, " ");
+            strcat(paramline, tokens[i]);
+        }
+
+        tfree(card->line);
+        card->line = newsub;
+
+        struct card *newcard = insert_new_line(card, paramline, 0,
+                                               card->linenum_orig, card->linesource);
+        (void)newcard;
     }
 
     /* Strip LTspice-only ilimit=, Vser= parameters from SW models */
@@ -2158,6 +2452,48 @@ struct card *ltspice_compat(struct card *oldcard)
         }
     }
 
+    /* Fix LTspice inv(expr) → (!(expr)) in B-source expressions.
+     * inv() is logical NOT used in some LTspice subcircuits (e.g. MC33063). */
+    for (card = oldcard; card; card = card->nextcard) {
+        char *cl = card->line;
+        if (!cl) continue;
+        if (cl[0] != 'b' && cl[0] != 'B') continue;
+        if (cl[1] == '.' || cl[1] == '\0') continue;
+        char *s = cl;
+        /* Find each inv( in the line */
+        while ((s = strstr(s, "inv(")) != NULL) {
+            /* Track depth to find the matching ')' */
+            int depth = 1;
+            char *end = s + 4; /* after 'inv(' */
+            for (; *end && depth > 0; end++) {
+                if (*end == '(') depth++;
+                else if (*end == ')') depth--;
+            }
+            if (depth != 0) break; /* malformed, stop searching */
+            end--; /* point to the matching ')' */
+            /* Now rewrite: inv( ... ) → (!( ... )) */
+            size_t len = strlen(cl);
+            char *result = tmalloc(len + 4); /* add up to 3 chars: '(!' + ')' */
+            /* prefix before 'inv' */
+            size_t pre = (size_t)(s - cl);
+            memcpy(result, cl, pre);
+            char *d = result + pre;
+            *d++ = '('; *d++ = '!'; *d++ = '('; /* "!(" */
+            /* inner content */
+            size_t inner = (size_t)(end - (s + 4));
+            memcpy(d, s + 4, inner);
+            d += inner;
+            *d++ = ')'; *d++ = ')'; /* "))" */
+            /* suffix after original ')' */
+            size_t suf = strlen(end + 1);
+            memcpy(d, end + 1, suf + 1);
+            tfree(card->line);
+            card->line = result;
+            s = result + pre + 1; /* continue scanning from after '!(' */
+            cl = result;
+        }
+    }
+
     /* Strip LTspice-only laplace keyword from R-element lines */
     for (card = oldcard; card; card = card->nextcard) {
         char *cl = card->line;
@@ -2168,6 +2504,137 @@ struct card *ltspice_compat(struct card *oldcard)
         if (la > cl && !isspace_c(la[-1])) continue;
         /* Truncate at the laplace keyword */
         *la = '\0';
+    }
+
+    /* Convert LTspice TC= value1 (value2) to tc1=value1 tc2=value2 on R/L/C lines.
+     * LTspice uses TC= tc1 (tc2) syntax; ngspice uses tc1= tc2= separately. */
+    for (card = oldcard; card; card = card->nextcard) {
+        char *cl = card->line;
+        if (!cl) continue;
+        char c0 = cl[0];
+        if (c0 != 'r' && c0 != 'R' && c0 != 'c' && c0 != 'C' &&
+            c0 != 'l' && c0 != 'L') continue;
+        if (cl[1] == '.' || cl[1] == '\0') continue;
+        char *tc = strstr(cl, "tc=");
+        if (!tc) tc = strstr(cl, "TC=");
+        if (!tc) continue;
+        /* Must be a standalone keyword (preceded by space/tab) */
+        if (tc > cl && tc[-1] != ' ' && tc[-1] != '\t') continue;
+        /* tc= value1 (value2) or tc=value1,value2 — extract value1 and optional value2.
+         * LTspice accepts: TC=2.34M (-4.57U), TC=2.34M,-4.57U, TC=2.34M -4.57U */
+        char *val = tc + 3;
+        while (*val == ' ' || *val == '\t') val++;
+        if (!*val || *val == ';') continue;
+        char *val1_start = val;
+        char *val1_end = val;
+        while (*val1_end && *val1_end != ' ' && *val1_end != '\t' && *val1_end != ';' &&
+               *val1_end != '(' && *val1_end != ',') val1_end++;
+        if (val1_end == val1_start) continue;
+        int has_comma = 0;
+        char *val2_start = val1_end;
+        while (*val2_start == ' ' || *val2_start == '\t') val2_start++;
+        if (*val2_start == ',') {
+            has_comma = 1;
+            val2_start++;
+            while (*val2_start == ' ' || *val2_start == '\t') val2_start++;
+        }
+        int has_parens = 0;
+        if (*val2_start == '(') {
+            has_parens = 1;
+            val2_start++;
+            while (*val2_start == ' ' || *val2_start == '\t') val2_start++;
+        }
+        char *val2_end = val2_start;
+        if (*val2_end) {
+            while (*val2_end && *val2_end != ' ' && *val2_end != '\t' && *val2_end != ')' &&
+                   *val2_end != ';' && *val2_end != ',') val2_end++;
+        }
+        int has_val2 = (val2_end > val2_start);
+        /* Build new line replacing TC= with tc1= tc2= */
+        size_t len = strlen(cl);
+        char *result = tmalloc(len + 64);
+        /* Prefix up to 'tc=' */
+        size_t pre = (size_t)(tc - cl);
+        memcpy(result, cl, pre);
+        char *d = result + pre;
+        /* Write tc1=value1 */
+        d += sprintf(d, "tc1=%.*s", (int)(val1_end - val1_start), val1_start);
+        /* Optional tc2=value2 */
+        if (has_val2)
+            d += sprintf(d, " tc2=%.*s", (int)(val2_end - val2_start), val2_start);
+        /* Suffix: what comes after the TC= value area */
+        const char *suf_start;
+        if (has_val2) {
+            if (has_parens) {
+                /* Skip past any trailing ')' after val2 */
+                suf_start = val2_end;
+                while (*suf_start == ' ' || *suf_start == '\t') suf_start++;
+                if (*suf_start == ')') suf_start++;
+            } else {
+                suf_start = val2_end;
+            }
+        } else {
+            suf_start = val1_end;
+        }
+        size_t suf = strlen(suf_start);
+        memcpy(d, suf_start, suf + 1);
+        tfree(card->line);
+        card->line = result;
+    }
+
+    /* Add braces around unbraced R=value, L=value, C=value expressions.
+     * LTspice allows R=expr without braces, but ngspice requires R={expr}. */
+    for (card = oldcard; card; card = card->nextcard) {
+        char *cl = card->line;
+        if (!cl) continue;
+        char c0 = cl[0];
+        if (c0 != 'r' && c0 != 'R' && c0 != 'c' && c0 != 'C' &&
+            c0 != 'l' && c0 != 'L') continue;
+        if (cl[1] == '.' || cl[1] == '\0') continue;
+        /* Check if the line has R=, L=, or C= followed by an expression.
+         * Must be a standalone keyword (preceded by space/tab or start-of-line),
+         * not part of a longer keyword like TC= or VC=. */
+        char *eq = strchr(cl, '=');
+        if (!eq) continue;
+        if (eq == cl) continue;  /* = at start of line */
+        char key_char = tolower_c(*(eq - 1));
+        if (key_char != 'r' && key_char != 'l' && key_char != 'c') continue;
+        /* Ensure the key is preceded by a separator (space, tab, or start of value area),
+         * not by another letter (which would mean it's part of a multi-letter keyword). */
+        if (eq > cl + 1) {
+            char prev = *(eq - 2);
+            if (prev != ' ' && prev != '\t' && prev != '(' && prev != ',')
+                continue;
+        }
+        char *val = eq + 1;
+        /* Skip whitespace after = */
+        while (*val == ' ' || *val == '\t') val++;
+        /* Already braced or quoted? */
+        if (*val == '{' || *val == '\'') continue;
+        /* Check if it looks like an expression (contains operators or functions) */
+        int is_expr = 0;
+        for (char *p = val; *p && *p != ' ' && *p != '\t' && *p != ';'; p++) {
+            if (*p == '+' || *p == '-' || *p == '*' || *p == '/' || *p == '(') {
+                is_expr = 1;
+                break;
+            }
+        }
+        if (!is_expr) continue;
+        /* Find end of value */
+        char *vend = val;
+        while (*vend && *vend != ' ' && *vend != '\t' && *vend != ';')
+            vend++;
+        /* Build new line with braces around value */
+        size_t prefix_len = val - cl;
+        size_t suffix_len = strlen(vend);
+        char *result = tmalloc(prefix_len + 3 + (vend - val) + suffix_len + 1);
+        memcpy(result, cl, prefix_len);
+        result[prefix_len] = '{';
+        memcpy(result + prefix_len + 1, val, vend - val);
+        result[prefix_len + 1 + (vend - val)] = '}';
+        memcpy(result + prefix_len + 2 + (vend - val), vend, suffix_len + 1);
+        tfree(card->line);
+        card->line = result;
     }
 
     /* Strip LTspice-only Rpar=, Rser=, Lser=, Cpar= from passive C/L element lines */
@@ -2396,15 +2863,21 @@ struct card *ltspice_compat(struct card *oldcard)
     }
 
     /* Convert LTspice IF(cond, tval, fval) to standard (...)?(...):(...) */
-    /* Handles IF() in E/G VALUE={} expressions, B-source expressions, params */
+    /* Handles IF() in E/G VALUE={} expressions, B-source expressions, params.
+     * Iterates to handle nested IF() calls (inner ones become exposed after
+     * outer ones are converted to ternary). */
     for (card = oldcard; card; card = card->nextcard) {
         char *cl = card->line;
         if (!cl) continue;
         if (cl[0] == '*' || cl[0] == '\0') continue;
-        char *newl = replace_if_ternary(cl);
-        if (newl) {
-            tfree(card->line);
-            card->line = newl;
+        while (1) {
+            char *newl = replace_if_ternary(cl);
+            if (!newl) break;
+            if (newl != cl) {
+                tfree(card->line);
+                card->line = newl;
+                cl = newl;
+            }
         }
     }
 
@@ -2426,7 +2899,24 @@ struct card *ltspice_compat(struct card *oldcard)
     /* Inject .param pi=... so {PI} in subcircuit expressions resolves */
     new_str = copy(".param pi=3.141592653589793");
     nextcard = insert_new_line(nextcard, new_str, 5, 0, "internal");
+    /* Inject .param temp = 'temper' so that {temp} (LTspice built-in global)
+     * resolves to the simulation temperature in Celsius. */
+    new_str = copy(".param temp = 'temper'");
+    nextcard = insert_new_line(nextcard, new_str, 6, 0, "internal");
+    /* Inject .param vt = ... (thermal voltage) for convenience */
+    new_str = copy(".param vt = '(temper + 273.15) * 8.6173303e-5'");
+    nextcard = insert_new_line(nextcard, new_str, 7, 0, "internal");
     nextcard->nextcard = oldcard;
+
+    /* Inject .param temp and vt inside each subcircuit for scoped access */
+    for (card = oldcard; card; card = card->nextcard) {
+        if (ciprefix(".subckt", card->line)) {
+            char *s1 = copy(".param temp = 'temper'");
+            insert_new_line(card, s1, 0, card->linenum_orig, card->linesource);
+            char *s2 = copy(".param vt = '(temper + 273.15) * 8.6173303e-5'");
+            insert_new_line(card->nextcard, s2, 1, card->linenum_orig, card->linesource);
+        }
+    }
 
     /* remove .backanno, replace 'noiseless' by 'moisy=0' */
     for (card = nextcard; card; card = card->nextcard) {
@@ -3211,17 +3701,6 @@ void ltspice_a_device_transform(struct card *oldcard)
 
         /* Check if this is an A-device line */
         if (*cut_line == 'a' || *cut_line == 'A') {
-            /* Count tokens */
-            char *tmp = copy(cut_line);
-            int tokcount = count_tokens_a(tmp);
-            tfree(tmp);
-
-            /* LTspice A-devices usually have 8 node pins + device type.
-             * Minimum tokens: instance_name + 8_pins + device_type = 10.
-             * We allow more for parameters (e.g. rise=1n). */
-            if (tokcount < 10)
-                continue;
-
             /* Parse the line */
             char *linecopy = copy(cut_line);
             char *s = linecopy;
@@ -3230,21 +3709,46 @@ void ltspice_a_device_transform(struct card *oldcard)
             char *instname = gettok_node(&s);
             if (!instname) { tfree(linecopy); continue; }
 
-            /* Get 8 pins */
-            char *pins[8];
+            /* Get pins and device type — read all remaining tokens, then
+             * find the devtype as the last token without '='.
+             * Params always contain '='; pins and devtype never do.
+             * This handles A-devices with fewer than 8 LTspice pins
+             * (e.g. VARISTOR with 4 pins). */
+            char *pins[8] = {NULL};
             int i;
-            for (i = 0; i < 8; i++) {
-                pins[i] = gettok_node(&s);
-                if (!pins[i]) break;
-            }
-
-            /* Get device type (last token) */
-            char *devtype = gettok(&s);
-            if (!devtype) {
-                tfree(instname);
-                for (i = 0; i < 8 && pins[i]; i++) tfree(pins[i]);
-                tfree(linecopy);
-                continue;
+            char *devtype = NULL;
+            char param_buf[1024] = "";
+            {
+                char *all_toks[16] = {NULL};
+                int nt = 0;
+                int dev_idx = -1;
+                char *tok;
+                while ((tok = gettok_node(&s)) != NULL && nt < 16) {
+                    all_toks[nt++] = tok;
+                }
+                for (int ti = nt - 1; ti >= 0; ti--) {
+                    if (strchr(all_toks[ti], '=') == NULL) {
+                        devtype = all_toks[ti];
+                        dev_idx = ti;
+                        break;
+                    }
+                }
+                if (!devtype) {
+                    tfree(instname);
+                    for (int fi = 0; fi < nt; fi++) tfree(all_toks[fi]);
+                    tfree(linecopy);
+                    continue;
+                }
+                int npins = dev_idx > 8 ? 8 : dev_idx;
+                for (i = 0; i < npins; i++) pins[i] = all_toks[i];
+                /* Build param string from tokens after devtype */
+                for (int fi = dev_idx + 1; fi < nt; fi++) {
+                    if (fi > dev_idx + 1 && strlen(param_buf) < sizeof(param_buf) - 2)
+                        strcat(param_buf, " ");
+                    if (strlen(param_buf) + strlen(all_toks[fi]) < sizeof(param_buf) - 1)
+                        strcat(param_buf, all_toks[fi]);
+                    tfree(all_toks[fi]);
+                }
             }
 
             /* Map device type to ngspice equivalent */
@@ -3288,10 +3792,10 @@ void ltspice_a_device_transform(struct card *oldcard)
             int in_count = 0, out_count = 0;
 
             {
-                char *pp = s;
+                char *pp = param_buf;
                 while (*pp == ' ' || *pp == '\t') pp++;
                 if (*pp != '\0') {
-                    iparams = ltspice_parse_inline_params(s);
+                    iparams = ltspice_parse_inline_params(param_buf);
                     do_bridge = iparams.present;
                 }
             }

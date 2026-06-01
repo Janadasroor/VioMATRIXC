@@ -7335,6 +7335,52 @@ static void inp_bsource_compat(struct card *card)
             /* exclude special pwl lines */
             if (strstr(curr_line, "=pwl("))
                 continue;
+            /* Fix LTspice if(( ... )) → if( ... ) pattern in B-source expressions */
+            {
+                char *ifp = strstr(curr_line, "if((");
+                if (!ifp) ifp = strstr(curr_line, "IF((");
+                if (!ifp) ifp = strstr(curr_line, "If((");
+                if (ifp) {
+                    int depth = 0;
+                    char *call_close = NULL;
+                    for (char *r = ifp + 2; *r; r++) {
+                        if (*r == '(') depth++;
+                        else if (*r == ')') {
+                            depth--;
+                            if (depth == 0) {
+                                call_close = r;
+                                break;
+                            }
+                        }
+                    }
+                    if (call_close) {
+                        /* Scan backwards past whitespace to find extra wrapping ')' */
+                        char *prev = call_close - 1;
+                        while (prev > ifp + 2 && (*prev == ' ' || *prev == '\t'))
+                            prev--;
+                        if (prev > ifp + 2 && *prev == ')') {
+                            /* Rewrite: ifp->'if((', inner starts at ifp+4,
+                             * extra_close is extra wrapping's ')',
+                             * call_close is if-call's ')'. */
+                            size_t len = strlen(curr_line);
+                            char *result = tmalloc(len + 1);
+                            size_t pre = (size_t)(ifp - curr_line);
+                            memcpy(result, curr_line, pre);
+                            char *d = result + pre;
+                            *d++ = 'i'; *d++ = 'f'; *d++ = '(';
+                            size_t inner_len = (size_t)(prev - (ifp + 4));
+                            memcpy(d, ifp + 4, inner_len);
+                            d += inner_len;
+                            *d++ = ')';
+                            size_t suf = strlen(call_close + 1);
+                            memcpy(d, call_close + 1, suf + 1);
+                            tfree(card->line);
+                            card->line = result;
+                            curr_line = card->line;
+                        }
+                    }
+                }
+            }
             /* store starting point for later parsing, beginning of
              * {expression} */
             equal_ptr = strchr(curr_line, '=');
