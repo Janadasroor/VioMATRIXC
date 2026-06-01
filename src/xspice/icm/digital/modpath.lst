@@ -26,6 +26,7 @@ d_srff
 d_srlatch
 d_state
 d_tff
+d_phasedet
 d_tristate
 d_xnor
 d_xor

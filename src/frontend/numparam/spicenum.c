@@ -267,7 +267,7 @@ transform(dico_t *dico, DSTRINGPTR dstr_p, bool incontrol)
         category = 'X';
     } else if (s[0] == '+') {   /* continuation line */
         category = '+';
-    } else if (!strchr("*$#", s[0])) {
+    } else     if (!strchr("*$#", s[0])) {
         /* not a comment line! */
         if (stripbraces(dstr_p) > 0)
             category = 'B';     /* line that uses braces */
