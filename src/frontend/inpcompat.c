@@ -2060,6 +2060,58 @@ struct card *ltspice_compat(struct card *oldcard)
         card->line = result;
     }
 
+    /* Strip {braces} from .param value expressions: LTspice allows {identifier}
+     * to reference parameters inside .param statements, but ngspice does not
+     * accept curly braces in .param values. Only strip braces around simple
+     * identifiers, not around expressions with operators (which ngspice handles).
+     * Example: .param Vh0=({ion}-{ioff})/({ion}+{ioff})/2
+     *   ->   .param Vh0=(ion-ioff)/(ion+ioff)/2 */
+    for (card = oldcard; card; card = card->nextcard) {
+        char *cl = card->line;
+        if (!cl) continue;
+        size_t llen = strlen(cl);
+        if (llen < 7) continue;
+        if (cl[0] != '.') continue;
+        if (strncasecmp(cl + 1, "param", 5) != 0) continue;
+        if (cl[6] != ' ' && cl[6] != '\t') continue;
+
+        int has_open = 0;
+        for (int i = 0; cl[i]; i++) {
+            if (cl[i] == '{') { has_open = 1; break; }
+        }
+        if (!has_open) continue;
+
+        char *result = tmalloc(llen + 1);
+        char *dst = result;
+        char *src = cl;
+
+        while (*src) {
+            if (*src == '{') {
+                char *end = strchr(src + 1, '}');
+                if (end && end > src + 1) {
+                    int is_ident = 1;
+                    for (char *p = src + 1; p < end; p++) {
+                        if (!isalnum_c((unsigned char)*p) && *p != '_') {
+                            is_ident = 0;
+                            break;
+                        }
+                    }
+                    if (is_ident) {
+                        size_t ident_len = end - (src + 1);
+                        memcpy(dst, src + 1, ident_len);
+                        dst += ident_len;
+                        src = end + 1;
+                        continue;
+                    }
+                }
+            }
+            *dst++ = *src++;
+        }
+        *dst = '\0';
+        tfree(card->line);
+        card->line = result;
+    }
+
     /* Replace LTspice scale notation: a digit after a scale suffix (u/m/k/M/G/T)
      * is treated as fractional part:  2u6 = 2.6e-6, 1m5 = 1.5e-3, 3k3 = 3.3e+3, etc.
      * ngspice needs the decimal point: 2.6u, 1.5m, 3.3k, etc. */
