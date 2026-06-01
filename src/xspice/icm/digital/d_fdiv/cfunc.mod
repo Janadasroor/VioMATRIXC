@@ -141,6 +141,9 @@ void cm_d_fdiv(ARGS)
 
 
 
+
+
+
     /*** Setup required state variables ***/
 
     if(INIT) {  /* initial pass */ 
@@ -157,10 +160,11 @@ void cm_d_fdiv(ARGS)
         freq_in = freq_in_old = (Digital_State_t *) cm_event_get_ptr(0,0);
         freq_out = freq_out_old = (Digital_State_t *) cm_event_get_ptr(1,0);
         count = count_old = (int *) cm_event_get_ptr(2,0);
+        
 
     }
     else {      /* Retrieve previous values */
-                                              
+                                               
         /* retrieve storage for the outputs */
         freq_in = (Digital_State_t *) cm_event_get_ptr(0,0);
         freq_in_old = (Digital_State_t *) cm_event_get_ptr(0,1);
@@ -175,16 +179,16 @@ void cm_d_fdiv(ARGS)
 
     /*** Output the strength of freq_out (always strong)... ***/
     OUTPUT_STRENGTH(freq_out) = STRONG;
-              
+               
 
     /** Retrieve parameters */
-    div_factor = PARAM(div_factor);     
+    div_factor = PARAM(div_factor);
                    
 
     /******* Determine analysis type and output appropriate values *******/
 
     if (0.0 == TIME) {   /****** DC analysis...output w/o delays ******/
-                                  
+                                   
 
         /* read initial count value, normalize, and if it is out of 
            bounds, set to "zero" equivalent */
@@ -196,8 +200,8 @@ void cm_d_fdiv(ARGS)
 
         if ( (0 < *count) && (*count <= PARAM(high_cycles)) ) {
             OUTPUT_STATE(freq_out) = *freq_out = *freq_out_old = ONE; 
-        }                    
-
+        }
+        
     }
 
     else {      /****** Transient Analysis ******/
@@ -205,7 +209,6 @@ void cm_d_fdiv(ARGS)
         /*** load current input value... ***/
         *freq_in = INPUT_STATE(freq_in);
                                      
-
         /**** Test to see if the input has provided an edge... ****/
         if ( (*freq_in != *freq_in_old)&&(*freq_in == 1) ) { 
 
@@ -232,7 +235,6 @@ void cm_d_fdiv(ARGS)
             }
         }
         else { /** Output does not change!! **/
-
             OUTPUT_CHANGED(freq_out) = FALSE;
 
         }

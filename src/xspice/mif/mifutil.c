@@ -66,8 +66,8 @@ char  *MIFgettok(char **s)
     char *end;
     char *beg;
 
-    /* skip over white spaces, '=', '(', ')', and ',' up to next token */
-    while (isspace_c(**s) || (**s == '=') ||
+    /* skip over white spaces, '(', ')', and ',' up to next token */
+    while (isspace_c(**s) ||
         (**s == '(') || (**s == ')') || (**s == ','))
         (*s)++;
 
@@ -88,8 +88,8 @@ char  *MIFgettok(char **s)
         (*s)++;
         ret_str = copy_substring(beg, *s);
 
-        /* skip over white spaces, '=', '(', ')', and ',' up to next token */
-        while (isspace_c(**s) || (**s == '=') ||
+        /* skip over white spaces, '(', ')', and ',' up to next token */
+        while (isspace_c(**s) ||
             (**s == '(') || (**s == ')') || (**s == ','))
             (*s)++;
 
@@ -106,8 +106,8 @@ char  *MIFgettok(char **s)
             if (**s == '"')
                 (*s)++;
 
-            /* skip over white spaces, '=', '(', ')', and ',' up to next token */
-            while (isspace_c(**s) || (**s == '=') ||
+            /* skip over white spaces, '(', ')', and ',' up to next token */
+            while (isspace_c(**s) ||
                 (**s == '(') || (**s == ')') || (**s == ','))
                 (*s)++;
 

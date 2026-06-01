@@ -4888,7 +4888,7 @@ static void inp_fix_param_values(struct card *c)
             continue;
 
         /* no handling of params in B source lines */
-        if (*line == 'b')
+        if (tolower_c(*line) == 'b')
             continue;
 
         /* for xspice .cmodel: replace .cmodel with .model and skip entire
@@ -9306,8 +9306,8 @@ static void add_subckt(struct nscope *scope, struct card *subckt_line)
     if (find_subckt_1(scope, name)) {
         fprintf(stderr, "Warning: redefinition of .subckt %s, ignored\n",
                 name);
-        /* rename the redefined subcircuit */
-        *n = '_';
+        tfree(name);
+        return;
     }
     struct card_assoc *entry = TMALLOC(struct card_assoc, 1);
     entry->name = name;

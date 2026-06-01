@@ -337,7 +337,7 @@ void cm_dac_bridge(ARGS)
                    since the last analog access. Determine when the change
                    occurred and calculate the current output, then
                    set a breakpoint for completion of the current transition.
-                */
+                 */
 
                 iota = (T(0) - T(1)) * 1e-7; // Ignorable
                 if (T(0) - in[i].i_changed < iota) {

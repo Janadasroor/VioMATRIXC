@@ -1112,6 +1112,17 @@ translate_node_name(struct bxx_buffer *buffer, const char *scname, const char *n
     if (!name_e)
         name_e = strchr(name, '\0');
 
+    /* Don't translate tokens that look like parameter assignments (key=val) */
+    {
+        const char *p;
+        for (p = name; p < name_e; p++) {
+            if (*p == '=') {
+                bxx_put_substring(buffer, name, name_e);
+                return;
+            }
+        }
+    }
+
     t = gettrans(name, name_e, &isglobal);
 
     if (t) {
@@ -1251,6 +1262,7 @@ translate(struct card *deck, char *formal, int flen, char *actual, char *scname,
 
         case '\0':
         case '*':
+            continue;
         case '$':
             continue;
 
