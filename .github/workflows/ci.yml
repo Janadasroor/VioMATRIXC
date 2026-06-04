@@ -36,7 +36,7 @@ jobs:
   # Linux x86_64
   # ------------------------------------------------------------------
   linux-x86-64:
-    if: github.event_name != 'workflow_dispatch' || inputs.linux-x86-64 == 'true'
+    if: github.event_name != 'workflow_dispatch' || inputs.linux-x86-64
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -90,7 +90,7 @@ jobs:
   # Linux ARM64
   # ------------------------------------------------------------------
   linux-arm64:
-    if: github.event_name != 'workflow_dispatch' || inputs.linux-arm64 == 'true'
+    if: github.event_name != 'workflow_dispatch' || inputs.linux-arm64
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
@@ -156,7 +156,7 @@ jobs:
   # macOS ARM64
   # ------------------------------------------------------------------
   macos:
-    if: github.event_name != 'workflow_dispatch' || inputs.macos == 'true'
+    if: github.event_name != 'workflow_dispatch' || inputs.macos
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
@@ -222,7 +222,7 @@ jobs:
   # Windows x86_64 (MSYS2 / MINGW64)
   # ------------------------------------------------------------------
   windows:
-    if: github.event_name != 'workflow_dispatch' || inputs.windows == 'true'
+    if: github.event_name != 'workflow_dispatch' || inputs.windows
     runs-on: windows-2022
     defaults:
       run:
