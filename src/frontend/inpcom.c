@@ -594,8 +594,24 @@ static struct library *read_a_lib(const char *y, const char *dir_name)
         lib->realpath = copy(yy);
         lib->habitat = ngdirname(yy);
 
-        lib->deck =
-            inp_read(newfp, 1 /*dummy*/, lib->habitat, lib->realpath, FALSE, FALSE).cc;
+        {
+            /* Temporarily clear LT/PS compat so .lib <section> boundary
+             * markers inside library files are not converted to .inc */
+            int saved_lt = newcompat.lt;
+            int saved_ps = newcompat.ps;
+            if (newcompat.lt || newcompat.ps) {
+                /* .lib inside a library file is a section boundary marker,
+                 * not an LTspice include statement */
+                newcompat.lt = FALSE;
+                newcompat.ps = FALSE;
+            }
+            lib->deck =
+                inp_read(newfp, 1 /*dummy*/, lib->habitat, lib->realpath, FALSE, FALSE).cc;
+            if (saved_lt || saved_ps) {
+                newcompat.lt = saved_lt;
+                newcompat.ps = saved_ps;
+            }
+        }
 
         struct card* tmpdeck;
         int cnumber = 1;
@@ -1458,10 +1474,26 @@ static struct inp_read_t inp_read(FILE* fp, int call_depth, const char* dir_name
                 /* In lt or ps there is no library section definition defined,
                  * so .lib is interpreted as old style .lib <file name> (no lib
                  * name given, .lib replaced by .include).
+                 *
+                 * However, .lib <file> <section> has a section name and must
+                 * be preserved as .lib for ngspice's library section mechanism.
+                 * Skip conversion when there are 2+ args after .lib.
+                 * Inside a library file, .lib <section> (no file path) is a
+                 * section boundary marker and must also be preserved.
                  */
-                char* s = skip_non_ws(buffer); /* skip over .lib */
-                fprintf(cp_err, "  File included as:   .inc %s\n", s);
-                memcpy(buffer, ".inc", 4);
+                char* after = skip_ws(buffer + 4);
+                if (*after) {
+                    char* rest = skip_ws(skip_non_ws(after));
+                    /* Has a second non-whitespace token → .lib <file> <section> */
+                    if (*rest && *rest != '(' && *rest != '\n' && *rest != '\r' && *rest != '#') {
+                        ; /* keep as .lib */
+                    } else {
+                        /* single arg, old-style .lib <file> or .lib <section> */
+                        char* s = skip_non_ws(buffer);
+                        fprintf(cp_err, "  File included as:   .inc %s\n", s);
+                        memcpy(buffer, ".inc", 4);
+                    }
+                }
             }
 
         if (ciprefix(".hdl", buffer)) {
@@ -1920,7 +1952,7 @@ static struct inp_read_t inp_read(FILE* fp, int call_depth, const char* dir_name
             fprintf(stdout, "Note: gnd in a subcircuit is not set to 0 automatically\n");
         }
 
-        if (!newcompat.lt && !newcompat.ps && !newcompat.s3) {
+        if (!newcompat.s3) {
             /* process all library section references */
             expand_section_references(cc, dir_name);
         }
