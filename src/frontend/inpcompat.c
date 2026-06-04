@@ -4315,9 +4315,9 @@ static char *ltspice_map_a_model(const char *upper)
     if (strcmp(upper, "SRLATCH") == 0 || strcmp(upper, "SR_LATCH") == 0) return "d_srlatch";
     if (strcmp(upper, "TFF") == 0 || strcmp(upper, "T_FF") == 0) return "d_tff";
     if (strcmp(upper, "COUNTER") == 0) return "d_fdiv";
-    if (strcmp(upper, "MODULATOR") == 0) return "a_modulator";
-    if (strcmp(upper, "SAMPLEHOLD") == 0) return "a_samplehold";
-    if (strcmp(upper, "VARISTOR") == 0) return "a_varistor";
+    if (strcmp(upper, "MODULATOR") == 0) return "modulator";
+    if (strcmp(upper, "SAMPLEHOLD") == 0) return "samplehold";
+    if (strcmp(upper, "VARISTOR") == 0) return "varistor";
     return NULL;
 }
 
@@ -4756,9 +4756,9 @@ void ltspice_compat_a(struct card *oldcard)
             /* Suppress bridges for analog codemodels.
              * adc_bridge excluded: needs DAC bridge on output so
              * digital signal drives analog node in subcircuits. */
-            bool is_analog = (strcmp(ng_type, "a_modulator") == 0 ||
-                              strcmp(ng_type, "a_samplehold") == 0 ||
-                              strcmp(ng_type, "a_varistor") == 0);
+            bool is_analog = (strcmp(ng_type, "modulator") == 0 ||
+                              strcmp(ng_type, "samplehold") == 0 ||
+                              strcmp(ng_type, "varistor") == 0);
             if (is_analog) do_bridge = false;
 
             /* Model-card form COUNTER: suppress bridges, extract cycles */
@@ -4853,6 +4853,26 @@ void ltspice_compat_a(struct card *oldcard)
                          model_name, (int)(2 * iparams.cycles), iparams.cycles);
             } else if (strcmp(upper, "SRFLOP") == 0 || strcmp(upper, "SRFF") == 0 || strcmp(upper, "SR_FF") == 0) {
                 snprintf(model_line, sizeof(model_line), ".model %s %s (ic=1)", model_name, ng_type);
+            } else if (strcmp(upper, "VARISTOR") == 0) {
+                char params[256] = "";
+                char tmp[64];
+                if (iparams.has_vref) { snprintf(tmp, sizeof(tmp), "vref=%.15g ", iparams.vref); strcat(params, tmp); }
+                if (iparams.has_roff) { snprintf(tmp, sizeof(tmp), "roff=%.15g ", iparams.roff); strcat(params, tmp); }
+                if (iparams.has_rclamp) { snprintf(tmp, sizeof(tmp), "rclamp=%.15g ", iparams.rclamp); strcat(params, tmp); }
+                snprintf(model_line, sizeof(model_line), ".model %s %s (%s)", model_name, ng_type, params);
+            } else if (strcmp(upper, "SAMPLEHOLD") == 0) {
+                char params[256] = "";
+                char tmp[64];
+                if (iparams.has_vt) { snprintf(tmp, sizeof(tmp), "vt=%.15g ", iparams.vt); strcat(params, tmp); }
+                if (iparams.has_vhigh) { snprintf(tmp, sizeof(tmp), "vhigh=%.15g ", iparams.vhigh); strcat(params, tmp); }
+                if (iparams.has_vlow) { snprintf(tmp, sizeof(tmp), "vlow=%.15g ", iparams.vlow); strcat(params, tmp); }
+                snprintf(model_line, sizeof(model_line), ".model %s %s (%s)", model_name, ng_type, params);
+            } else if (strcmp(upper, "MODULATOR") == 0) {
+                char params[256] = "";
+                char tmp[64];
+                if (iparams.has_mark) { snprintf(tmp, sizeof(tmp), "mark=%.15g ", iparams.mark); strcat(params, tmp); }
+                if (iparams.has_space) { snprintf(tmp, sizeof(tmp), "space=%.15g ", iparams.space); strcat(params, tmp); }
+                snprintf(model_line, sizeof(model_line), ".model %s %s (%s)", model_name, ng_type, params);
             } else {
                 snprintf(model_line, sizeof(model_line), ".model %s %s ()", model_name, ng_type);
             }

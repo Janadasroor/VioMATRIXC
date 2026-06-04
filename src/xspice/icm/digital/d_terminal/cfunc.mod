@@ -37,6 +37,9 @@
 #include <string.h>
 #include <fcntl.h>
 #include <errno.h>
+#ifdef __linux__
+#include <sys/ioctl.h>
+#endif
 
 #define DT_RING_SIZE 512
 
@@ -133,26 +136,39 @@ void cm_d_terminal(ARGS)
             const char *link = PARAM(pty);
             int master = open("/dev/ptmx", O_RDWR | O_NOCTTY);
             if (master >= 0) {
+                int ok = 0;
+#ifdef __linux__
+                int unlock = 0;
+                ioctl(master, TIOCSPTLCK, &unlock);
+                int pty_num;
+                if (ioctl(master, TIOCGPTN, &pty_num) == 0) {
+                    snprintf(ts->slave_path, sizeof(ts->slave_path),
+                             "/dev/pts/%d", pty_num);
+                    ok = 1;
+                }
+#else
                 if (grantpt(master) == 0 && unlockpt(master) == 0) {
                     const char *slave = ptsname(master);
                     if (slave) {
                         strncpy(ts->slave_path, slave, sizeof(ts->slave_path) - 1);
                         ts->slave_path[sizeof(ts->slave_path) - 1] = '\0';
-                        strncpy(ts->link_path, link, sizeof(ts->link_path) - 1);
-                        ts->link_path[sizeof(ts->link_path) - 1] = '\0';
-                        unlink(link);
-                        {
-                            int r = symlink(ts->slave_path, link);
-                            (void)r;
-                        }
-                        {
-                            int fl = fcntl(master, F_GETFL, 0);
-                            fcntl(master, F_SETFL, fl | O_NONBLOCK);
-                        }
-                        ts->pty_fd = master;
-                    } else {
-                        close(master);
+                        ok = 1;
                     }
+                }
+#endif
+                if (ok) {
+                    strncpy(ts->link_path, link, sizeof(ts->link_path) - 1);
+                    ts->link_path[sizeof(ts->link_path) - 1] = '\0';
+                    unlink(link);
+                    {
+                        int r = symlink(ts->slave_path, link);
+                        (void)r;
+                    }
+                    {
+                        int fl = fcntl(master, F_GETFL, 0);
+                        fcntl(master, F_SETFL, fl | O_NONBLOCK);
+                    }
+                    ts->pty_fd = master;
                 } else {
                     close(master);
                 }

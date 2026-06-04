@@ -6,9 +6,9 @@ FILE varistor/cfunc.mod — analog varistor (voltage-controlled resistor) codemo
 LTspice-compatible VARISTOR A-device: variable resistance between
 OUT+ and OUT- controlled by voltage across IN+ and IN-.
 
-I = V(out) / roff + max(V(out) - Vref, 0) / rclamp
-
-Clamp knee smoothed over a 2% window around Vref using cubic Hermite spline.
+  R = roff when V(in) < Vref
+  R = rclamp when V(in) > Vref
+  Smooth cubic Hermite transition in a 2% window around Vref.
 
 Ports (from ifspec):
   in_pos — controlling voltage positive (IN/v)
@@ -16,9 +16,12 @@ Ports (from ifspec):
   out    — floating conductance (INOUT/gd)
 
 Params:
-  vref   — clamp voltage (default 1.0 V)
+  vref   — threshold voltage (default 1.0 V)
   roff   — off resistance (default 1e12 ohm)
   rclamp — clamp resistance (default 1.0 ohm)
+
+Usage:
+  A_var in+ in- out+ out- varistor vref=12
 
 ================================================================================*/
 
@@ -32,49 +35,55 @@ Params:
 void
 cm_varistor(ARGS)
 {
-    double vref;
-    double roff, rclamp;
-    double g_off;
-    double v_out;
-    double dv;
-    double delta;
-    double clamped_dv;
-    double i_out;
-    double dclamp_dv;
-    double x;
+    double vref, roff, rclamp;
+    double g_off, g_clamp;
+    double v_ctrl, v_out;
+    double dv, delta, x;
+    double g_smooth;   /* smoothed conductance beyond the knee */
+    double dg_smooth;  /* derivative d(g_smooth)/d(v_ctrl) */
 
     vref   = PARAM(vref);
     roff   = PARAM(roff);
     rclamp = PARAM(rclamp);
     g_off  = 1.0 / roff;
+    g_clamp = 1.0 / rclamp;
 
     if (ANALYSIS == MIF_DC || ANALYSIS == MIF_TRAN) {
 
+        v_ctrl = INPUT(in_pos) - INPUT(in_neg);
         v_out = INPUT(out);
-        dv = v_out - vref;
-        delta = vref * 0.02;
+        dv = v_ctrl - vref;
+        delta = (vref > 0) ? vref * 0.02 : 0.02;
 
         if (dv >= delta) {
-            clamped_dv = dv;
-            dclamp_dv = 1.0;
+            /* Fully on: rclamp conductance */
+            g_smooth  = g_clamp;
+            dg_smooth = 0.0;
         } else if (dv <= -delta) {
-            clamped_dv = 0.0;
-            dclamp_dv = 0.0;
+            /* Fully off: leakage only */
+            g_smooth  = 0.0;
+            dg_smooth = 0.0;
         } else {
+            /* Cubic Hermite transition knee */
             x = dv / delta;
-            clamped_dv = delta * (0.5 + 0.75 * x - 0.25 * x * x * x);
-            dclamp_dv = 0.75 - 0.75 * x * x;
+            g_smooth  = g_clamp * (0.5 + 0.75 * x - 0.25 * x * x * x);
+            dg_smooth = g_clamp * (0.75 - 0.75 * x * x) / delta;
         }
 
-        i_out = g_off * v_out + clamped_dv / rclamp;
+        /* Total conductance = leakage + smoothed clamp */
+        /* OUTPUT(out) is the current I = G * V(out) */
+        OUTPUT(out) = (g_off + g_smooth) * v_out;
 
-        OUTPUT(out) = i_out;
-        PARTIAL(out, out) = g_off + dclamp_dv / rclamp;
-        PARTIAL(out, in_pos) = 0;
-        PARTIAL(out, in_neg) = 0;
+        /* PARTIAL(out, out) = dI/dVout = G (conductance seen by output) */
+        PARTIAL(out, out) = g_off + g_smooth;
+
+        /* PARTIAL(out, in_pos) = dI/dV(in_pos) = Vout * dG/dVctrl */
+        PARTIAL(out, in_pos) = INPUT(out) * dg_smooth;
+
+        /* PARTIAL(out, in_neg) = -dI/dV(in_pos) */
+        PARTIAL(out, in_neg) = -INPUT(out) * dg_smooth;
 
     } else {
-
         OUTPUT(out) = 0;
     }
 }
