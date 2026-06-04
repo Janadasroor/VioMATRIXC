@@ -37,7 +37,6 @@
 #include <string.h>
 #include <fcntl.h>
 #include <errno.h>
-#include <sys/ioctl.h>
 
 #define DT_RING_SIZE 512
 
@@ -128,35 +127,38 @@ void cm_d_terminal(ARGS)
             else if (strcmp(PARAM(parity), "odd") == 0) ts->parity_type = 2;
         }
 
-        /* Open PTY if path given */
+        /* Open PTY if path given (POSIX only) */
+#ifndef _WIN32
         if (!PARAM_NULL(pty) && PARAM(pty)[0]) {
             const char *link = PARAM(pty);
             int master = open("/dev/ptmx", O_RDWR | O_NOCTTY);
             if (master >= 0) {
-                int unlock = 0;
-                ioctl(master, TIOCSPTLCK, &unlock);
-
-                int pty_num;
-                if (ioctl(master, TIOCGPTN, &pty_num) == 0) {
-                    snprintf(ts->slave_path, sizeof(ts->slave_path),
-                             "/dev/pts/%d", pty_num);
-                    strncpy(ts->link_path, link, sizeof(ts->link_path) - 1);
-                    ts->link_path[sizeof(ts->link_path) - 1] = '\0';
-                    unlink(link);
-                    {
-                        int r = symlink(ts->slave_path, link);
-                        (void)r;
+                if (grantpt(master) == 0 && unlockpt(master) == 0) {
+                    const char *slave = ptsname(master);
+                    if (slave) {
+                        strncpy(ts->slave_path, slave, sizeof(ts->slave_path) - 1);
+                        ts->slave_path[sizeof(ts->slave_path) - 1] = '\0';
+                        strncpy(ts->link_path, link, sizeof(ts->link_path) - 1);
+                        ts->link_path[sizeof(ts->link_path) - 1] = '\0';
+                        unlink(link);
+                        {
+                            int r = symlink(ts->slave_path, link);
+                            (void)r;
+                        }
+                        {
+                            int fl = fcntl(master, F_GETFL, 0);
+                            fcntl(master, F_SETFL, fl | O_NONBLOCK);
+                        }
+                        ts->pty_fd = master;
+                    } else {
+                        close(master);
                     }
-                    {
-                        int fl = fcntl(master, F_GETFL, 0);
-                        fcntl(master, F_SETFL, fl | O_NONBLOCK);
-                    }
-                    ts->pty_fd = master;
                 } else {
                     close(master);
                 }
             }
         }
+#endif
 
         /* Set initial output = HIGH (marking) */
         OUTPUT_STATE(d_out) = ONE;
