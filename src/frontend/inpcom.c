@@ -1100,6 +1100,18 @@ struct card *inp_readall(FILE *fp, const char *dir_name, const char* file_name,
         /* some syntax checks, excluding title line */
         inp_check_syntax(working);
 
+        if (newcompat.lt && newcompat.a) {
+            /* Apply expression-level transforms to the full deck.
+             * This injects .func if(), .func limit(), .param temp=27, etc.,
+             * and transforms If()→?:, &→&&, |→||, R=expr→R={expr}, etc.
+             * Must run BEFORE ltspice_compat_a() so that A-device transforms
+             * see the already-transformed expressions. */
+            cc->nextcard = ltspice_compat(working);
+            /* Update working pointer to reflect the new head; cc->nextcard
+             * now includes both the injected defs and the original deck. */
+            if (cc->nextcard)
+                working = cc->nextcard;
+        }
         if (newcompat.lt && newcompat.a)
             ltspice_compat_a(working);
         if (newcompat.ps && newcompat.a)
@@ -1627,8 +1639,11 @@ static struct inp_read_t inp_read(FILE* fp, int call_depth, const char* dir_name
             }
 
             if (newcard) {
-                if (newcompat.lt && !newcompat.a)
-                    newcard = ltspice_compat(newcard);
+                /* Expression-level transforms are now applied to the full
+                 * deck in inp_readall() via the 'a' flag path.  Here we
+                 * only apply pspice_compat if ps mode is set without 'a'.
+                 * Skip expression-level ltspice_compat here — it will be
+                 * called once in inp_readall() for the whole deck. */
                 if (newcompat.ps && !newcompat.a)
                     newcard = pspice_compat(newcard);
 

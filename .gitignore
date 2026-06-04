@@ -31,4 +31,9 @@ libtool
 
 # Agent scratchpad (not part of the source)
 AGENTS.md
-.bak
+
+# Backup and artifact extensions
+*.bak
+*.raw
+*.test
+out.txt

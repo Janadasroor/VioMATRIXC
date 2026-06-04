@@ -55,6 +55,10 @@ SWload(GENmodel *inModel, CKTcircuit *ckt)
                         current_state = REALLY_OFF;
                     else if (model->SWvHysteresis < 0 && v_ctrl < model->SWvThreshold + model->SWvHysteresis)
                         current_state = REALLY_OFF;
+                    else if (model->SWvHysteresis >= 0 && v_ctrl > model->SWvThreshold + model->SWvHysteresis)
+                        current_state = REALLY_ON;
+                    else if (model->SWvHysteresis < 0 && v_ctrl > model->SWvThreshold - model->SWvHysteresis)
+                        current_state = REALLY_ON;
                     else
                         current_state = HYST_OFF;
                 }

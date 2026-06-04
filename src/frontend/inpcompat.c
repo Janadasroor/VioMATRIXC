@@ -881,9 +881,9 @@ struct card *pspice_compat(struct card *oldcard)
     rem_double_braces(oldcard);
 
     /* add predefined params TEMP, VT, GMIN to beginning of deck */
-    char *new_str = copy(".param temp = 'temper'");
+    char *new_str = copy(".param temp = 27");
     newcard = insert_new_line(NULL, new_str, 1, 0, "internal");
-    new_str = copy(".param vt = '(temper + 273.15) * 8.6173303e-5'");
+    new_str = copy(".param vt = 0.025865");
     nextcard = insert_new_line(newcard, new_str, 2, 0, "internal");
     new_str = copy(".param gmin = 1e-12");
     nextcard = insert_new_line(nextcard, new_str, 3, 0, "internal");
@@ -918,32 +918,15 @@ struct card *pspice_compat(struct card *oldcard)
 #endif
 
 
-    /* add predefined parameters TEMP, VT after each subckt call */
-    /* FIXME: This should not be necessary if we had a better sense of
-    hierarchy during the evaluation of TEMPER */
+    /* Inject .param temp = 27 inside each subcircuit so that {temp} from
+     * LTspice resolves to the default simulation temperature. */
     for (card = newcard; card; card = card->nextcard) {
         char *cut_line = card->line;
         if (ciprefix(".subckt", cut_line)) {
-            new_str = copy(".param temp = 'temper'");
+            new_str = copy(".param temp = 27");
             nextcard = insert_new_line(card, new_str, 0, card->linenum_orig, card->linesource);
-            new_str = copy(".param vt = '(temper + 273.15) * 8.6173303e-5'");
+            new_str = copy(".param vt = 0.025865");
             nextcard = insert_new_line(nextcard, new_str, 1, card->linenum_orig, card->linesource);
-            /* params: replace comma separator by space.
-               Do nothing if you are inside of { }. */
-            char* parastr = strstr(cut_line, "params:");
-            int brace = 0;
-            if (parastr) {
-                parastr += 8;
-                while (*parastr) {
-                    if (*parastr == '{')
-                        brace++;
-                    else if (*parastr == '}')
-                        brace--;
-                    if (brace == 0 && *parastr == ',')
-                        *parastr = ' ';
-                    parastr++;
-                }
-            }
         }
     }
 
@@ -1455,79 +1438,85 @@ struct card *pspice_compat(struct card *oldcard)
                 tfree(modname);
             }
             /* S vswitch  (parameters ron, roff, von, voff) */
-            /* We have to find 0 to 4 parameters, identified by 'von=' etc. and
-             * replace them by the pswitch code model parameters
-             * replace VON by cntl_on, VOFF by cntl_off, RON by r_on, and ROFF by r_off.
-             * Parameters not found have to be replaced by their default values. */
+            /* Convert to ngspice SW model with VT/VH arithmetic:
+             *   VT = (VON + VOFF) / 2, VH = |VON - VOFF| */
             else if (strstr(str, "von=") || strstr(str, "voff=")) {
-                char* newstr, *begstr;
-                char* lstr = copy(str);
-                /* ron */
-                char* partstr = strstr(lstr, "ron=");
-                if (!partstr) {
-                    newstr = tprintf("%s %s", "r_on=1.0", lstr);  //default value
+                char *lstr = copy(str);
+                double ron_val = 1.0, roff_val = 1.0e9;
+                double von_val = 1.0, voff_val = 0.0;
+                double vt_val, vh_val;
+                char *p;
+                char ron_str[64], roff_str[64], vt_str[64], vh_str[64];
+                int has_paren;
+
+                has_paren = (lstr[strlen(lstr) - 1] == ')');
+
+                /* extract ron */
+                if ((p = strstr(lstr, "ron="))) {
+                    char *val = p + 4;
+                    char *end = val;
+                    while (*end && *end != ' ' && *end != '\t' && *end != ')' && *end != '\n') end++;
+                    if (end > val) {
+                        char saved = *end;
+                        *end = '\0';
+                        ron_val = atof(val);
+                        *end = saved;
+                    }
                 }
-                else {
-                    begstr = copy_substring(lstr, partstr);
-                    newstr = tprintf("%s r_on%s", begstr, partstr + 3);
-                    tfree(begstr);
+                /* extract roff */
+                if ((p = strstr(lstr, "roff="))) {
+                    char *val = p + 5;
+                    char *end = val;
+                    while (*end && *end != ' ' && *end != '\t' && *end != ')' && *end != '\n') end++;
+                    if (end > val) {
+                        char saved = *end;
+                        *end = '\0';
+                        roff_val = atof(val);
+                        *end = saved;
+                    }
                 }
+                /* extract von */
+                if ((p = strstr(lstr, "von="))) {
+                    char *val = p + 4;
+                    char *end = val;
+                    while (*end && *end != ' ' && *end != '\t' && *end != ')' && *end != '\n') end++;
+                    if (end > val) {
+                        char saved = *end;
+                        *end = '\0';
+                        von_val = atof(val);
+                        *end = saved;
+                    }
+                }
+                /* extract voff */
+                if ((p = strstr(lstr, "voff="))) {
+                    char *val = p + 5;
+                    char *end = val;
+                    while (*end && *end != ' ' && *end != '\t' && *end != ')' && *end != '\n') end++;
+                    if (end > val) {
+                        char saved = *end;
+                        *end = '\0';
+                        voff_val = atof(val);
+                        *end = saved;
+                    }
+                }
+
+                vt_val = (von_val + voff_val) / 2.0;
+                vh_val = (von_val > voff_val ? von_val - voff_val : voff_val - von_val);
+                if (vh_val < 1e-12) vh_val = 1e-6;
+
+                snprintf(ron_str, sizeof(ron_str), "%.15g", ron_val);
+                snprintf(roff_str, sizeof(roff_str), "%.15g", roff_val);
+                snprintf(vt_str, sizeof(vt_str), "%.15g", vt_val);
+                snprintf(vh_str, sizeof(vh_str), "%.15g", vh_val);
+
                 tfree(lstr);
-                lstr = newstr;
-                /* roff */
-                partstr = strstr(lstr, "roff=");
-                if (!partstr) {
-                    newstr = tprintf("%s %s", "r_off=1.0e6", lstr);  //default value
-                }
-                else {
-                    begstr = copy_substring(lstr, partstr);
-                    newstr = tprintf("%s r_off%s", begstr, partstr + 4);
-                    tfree(begstr);
-                }
-                tfree(lstr);
-                lstr = newstr;
-                /* von */
-                partstr = strstr(lstr, "von=");
-                if (!partstr) {
-                    newstr = tprintf("%s %s", "cntl_on=1", lstr);  //default value
-                    tfree(lstr);
-                    lstr = newstr;
-                }
-                else {
-                    begstr = copy_substring(lstr, partstr);
-                    newstr = tprintf("%s cntl_on%s", begstr, partstr + 3);
-                    tfree(begstr);
-                }
-                tfree(lstr);
-                lstr = newstr;
-                /* voff */
-                partstr = strstr(lstr, "voff=");
-                if (!partstr) {
-                    newstr = tprintf("%s %s", "cntl_off=0", lstr);  //default value
-                    tfree(lstr);
-                    lstr = newstr;
-                }
-                else {
-                    begstr = copy_substring(lstr, partstr);
-                    newstr = tprintf("%s cntl_off%s", begstr, partstr + 4);
-                    tfree(begstr);
-                }
-                tfree(lstr);
-                lstr = newstr;
                 tfree(card->line);
-                if (lstr[strlen(lstr) - 1] == ')')
-                    card->line = tprintf(".model a%s pswitch( log=TRUE %s", modname, lstr);
+                if (has_paren)
+                    card->line = tprintf(".model %s sw (ron=%s roff=%s vt=%s vh=%s)", modname, ron_str, roff_str, vt_str, vh_str);
                 else
-                    card->line = tprintf(".model a%s pswitch(%s log=TRUE)", modname, lstr);
-                tfree(lstr);
-                /* add to list, to change vswitch instance to code model line */
-                if (nesting > 0)
-                    modelsfound = insert_new_model(
-                        modelsfound, modname, NULL, NULL, subcktline->line);
-                else
-                    modelsfound = insert_new_model(
-                        modelsfound, modname, NULL, NULL, "top");
+                    card->line = tprintf(".model %s sw ron=%s roff=%s vt=%s vh=%s", modname, ron_str, roff_str, vt_str, vh_str);
                 tfree(modname);
+                /* Not added to modelsfound — SW model is natively supported by S-devices */
             }
             else {
                 fprintf(stderr, "Error: Bad switch model in line %s\n", card->line);
@@ -1890,14 +1879,21 @@ static void ltspice_table_transform(struct card *startcard)
             }
         }
         if (!tablepos) continue;
-        
+
+        /* Locate the '(' after "table".  Two formats:
+         *   table=(x0 y0, x1 y1, ...)   — with '=', or
+         *   table(x0 y0 x1 y1 ...)      — bare table( */
+        char *s_data;
         char *eq = strchr(tablepos, '=');
-        if (!eq) continue;
-
-        /* Skip over "table =" part and optional "{" */
-        char *s_data = eq + 1;
-        while (*s_data && (isspace_c(*s_data) || *s_data == '{')) s_data++;
-
+        if (eq) {
+            s_data = eq + 1;
+            while (*s_data && (isspace_c(*s_data) || *s_data == '{'))
+                s_data++;
+        } else {
+            s_data = tablepos + 5;
+            while (*s_data && isspace_c(*s_data))
+                s_data++;
+        }
         if (*s_data != '(') continue;
 
         /* Parse the line: title node1 node2 node3 node4 ... */
@@ -2004,6 +2000,92 @@ static void ltspice_table_transform(struct card *startcard)
 }
 
 
+/* Replace LTspice/PSpice TBL(...) syntax in I-sources with ngspice
+ * B-source table(time, ...) function.
+ *
+ * LTspice format:   Ixxx n+ n- TBL(t1 i1 t2 i2 ...)
+ * Each is converted to a B-source:
+ *   Bxxx n+ n- I = table(time, t1, i1, t2, i2, ...)
+ */
+static void ltspice_tbl_transform(struct card *startcard)
+{
+    struct card *card;
+    for (card = startcard; card; card = card->nextcard) {
+        char *cut_line = card->line;
+        if (!cut_line) continue;
+        if (tolower_c(*cut_line) != 'i')
+            continue;
+
+        char *tblpos = NULL;
+        for (char *cp = cut_line; *cp; cp++) {
+            if (tolower_c(cp[0]) == 't' && tolower_c(cp[1]) == 'b' &&
+                tolower_c(cp[2]) == 'l') {
+                tblpos = cp;
+                break;
+            }
+        }
+        if (!tblpos) continue;
+
+        char *s_data = tblpos + 3;
+        while (*s_data && isspace_c(*s_data)) s_data++;
+        if (*s_data != '(') continue;
+
+        char *open_paren = s_data;
+        int paren_count = 0;
+        char *close_paren = open_paren;
+        for (; *close_paren; close_paren++) {
+            if (*close_paren == '(') paren_count++;
+            else if (*close_paren == ')') {
+                paren_count--;
+                if (paren_count == 0) break;
+            }
+        }
+        if (!*close_paren || paren_count != 0 || close_paren <= open_paren)
+            continue;
+
+        size_t datalen = (size_t)(close_paren - open_paren - 1);
+        char *data = tmalloc(datalen + 1);
+        memcpy(data, open_paren + 1, datalen);
+        data[datalen] = '\0';
+
+        for (char *p = data; *p; p++)
+            if (*p == ',') *p = ' ';
+
+        char table_args[4096] = "";
+        int idx = 0;
+        char *d = data;
+        char *tok;
+        while ((tok = gettok(&d)) != NULL) {
+            if (idx > 0)
+                strcat(table_args, ", ");
+            strcat(table_args, tok);
+            tfree(tok);
+            idx++;
+        }
+        tfree(data);
+        if (idx < 2) continue;
+
+        char *linecopy = copy(cut_line);
+        char *ls = linecopy;
+        char *name_tok = gettok(&ls);
+        char *node1 = gettok(&ls);
+        char *node2 = gettok(&ls);
+        if (!name_tok || !node1 || !node2) {
+            tfree(name_tok); tfree(node1); tfree(node2);
+            tfree(linecopy);
+            continue;
+        }
+
+        char *newsrc = tprintf("B%s %s %s I = table(time, %s)",
+                               name_tok, node1, node2, table_args);
+        tfree(card->line);
+        card->line = newsrc;
+
+        tfree(name_tok); tfree(node1); tfree(node2);
+        tfree(linecopy);
+    }
+}
+
 struct card *ltspice_compat(struct card *oldcard)
 {
     struct card *card, *newcard, *nextcard;
@@ -2020,6 +2102,90 @@ struct card *ltspice_compat(struct card *oldcard)
 
     /* handle TABLE functions in G and E sources */
     replace_table(oldcard);
+
+    /* handle TBL(...) functions in I-sources */
+    ltspice_tbl_transform(oldcard);
+
+    /* Replace tbl( with table( in ANY line (not just I-sources).
+     * LTspice uses tbl() as a function in B-source expressions
+     * ("Bi ... I = V(drv)*I(Vo)+tbl(V(Vcc,Com),0,0,1,.2m)").
+     * ngspice's table() uses identical argument syntax. */
+    for (card = oldcard; card; card = card->nextcard) {
+        char *cl = card->line;
+        if (!cl) continue;
+        size_t len = strlen(cl);
+        char *result = tmalloc(len + 1);
+        char *dst = result;
+        char *src = cl;
+        int changed = 0;
+        while (*src) {
+            if ((tolower_c(src[0]) == 't' && tolower_c(src[1]) == 'b' &&
+                 tolower_c(src[2]) == 'l' && src[3] == '(') &&
+                (src == cl || !isalnum_c((unsigned char)src[-1]))) {
+                memcpy(dst, "table", 5);
+                dst += 5;
+                src += 3;
+                changed = 1;
+            } else {
+                *dst++ = *src++;
+            }
+        }
+        *dst = '\0';
+        if (changed) {
+            tfree(card->line);
+            card->line = result;
+        } else {
+            tfree(result);
+        }
+    }
+
+    /* Replace buf(...) with u(...-0.5) in B-source expressions.
+     * LTspice's buf() returns 1 when input > 0.5, 0 otherwise.
+     * ngspice's u() returns 1 when input > 0.  So buf(x) = u(x-0.5). */
+    for (card = oldcard; card; card = card->nextcard) {
+        char *cl = card->line;
+        if (!cl) continue;
+        if (strstr(cl, "buf(") == NULL && strstr(cl, "BUF(") == NULL &&
+            strstr(cl, "Buf(") == NULL) continue;
+        size_t len = strlen(cl);
+        char *result = tmalloc(len * 2 + 20);
+        char *dst = result;
+        char *src = cl;
+        while (*src) {
+            if ((src[0] == 'b' || src[0] == 'B') &&
+                (src[1] == 'u' || src[1] == 'U') &&
+                (src[2] == 'f' || src[2] == 'F') &&
+                src[3] == '(' &&
+                (src == cl || !isalnum_c((unsigned char)src[-1]))) {
+                /* Find matching close paren */
+                char *arg_start = src + 4;
+                char *arg_end = arg_start;
+                int depth = 1;
+                while (*arg_end && depth > 0) {
+                    if (*arg_end == '(') depth++;
+                    else if (*arg_end == ')') depth--;
+                    if (depth > 0) arg_end++;
+                }
+                if (depth == 0 && arg_end > arg_start) {
+                    size_t arg_len = arg_end - arg_start;
+                    *dst++ = 'u';
+                    *dst++ = '(';
+                    memcpy(dst, arg_start, arg_len);
+                    dst += arg_len;
+                    memcpy(dst, "-0.5)", 5);
+                    dst += 5;
+                    src = arg_end + 1;
+                } else {
+                    *dst++ = *src++;
+                }
+            } else {
+                *dst++ = *src++;
+            }
+        }
+        *dst = '\0';
+        tfree(card->line);
+        card->line = result;
+    }
 
     /* Replace non-ASCII dash/minus characters with ASCII hyphen-minus.
      * LTspice subcircuits sometimes contain EN DASH (U+2013) or other
@@ -2054,6 +2220,507 @@ struct card *ltspice_compat(struct card *oldcard)
             tfree(card->line);
             card->line = result;
         }
+    }
+
+    /* Uncomment *param lines and inject case-variant aliases.
+     * LTspice authors sometimes comment out .param lines (*param vcc=5...)
+     * because LTspice resolves parameters case-insensitively. ngspice needs
+     * the .param active AND needs alias cards for case variants.
+     * Example: *param vcc=5 with {VCC} references
+     *   -> .param vcc=5  and  .param VCC=vcc (alias card) */
+    {
+        /* Pass 1: uncomment *param lines */
+        for (card = oldcard; card; card = card->nextcard) {
+            char *cl = card->line;
+            if (!cl) continue;
+
+            /* Check for *param or * param (with optional leading whitespace) */
+            char *lp = cl;
+            while (*lp == ' ' || *lp == '\t') lp++;
+            if (lp[0] != '*' || lp[1] == '\0') continue;
+            char *pp = lp + 1;
+            while (*pp == ' ' || *pp == '\t') pp++;
+            if (strncasecmp(pp, "param", 5) != 0) continue;
+            if (pp[5] != ' ' && pp[5] != '\t' && pp[5] != '=') continue;
+
+            /* Uncomment by stripping the * (and any space before it) and adding .
+             * *param vcc=5 -> .param vcc=5 */
+            {
+            size_t off = (pp - 1) - cl;  /* offset to the * character */
+            if (off > 0 && (cl[off-1] == ' ' || cl[off-1] == '\t'))
+                off--;  /* also remove trailing whitespace before * */
+            char *result = tmalloc(strlen(cl + off + 1) + 2);
+            result[0] = '.';
+            strcpy(result + 1, cl + off + 1);
+            tfree(card->line);
+            card->line = result;
+            }
+        }
+
+        /* Pass 2: inject case-variant alias cards */
+        for (card = oldcard; card; card = card->nextcard) {
+            char *cl = card->line;
+            if (!cl) continue;
+
+            /* Check current card for .param declaration */
+            if (cl[0] == '.' && strncasecmp(cl + 1, "param", 5) == 0) {
+                /* Check if any {identifier} in later body cards of this subcircuit
+                 * matches one of these params case-insensitively */
+                char *ps_copy = copy(cl + 7);
+                char *ps = ps_copy;
+                char *tok = gettok(&ps);
+                while (tok) {
+                    char *eq = strchr(tok, '=');
+                    if (!eq) { tfree(tok); tok = gettok(&ps); continue; }
+                    *eq = '\0';
+
+                    /* Scan forward for {identifier} case variants */
+                    struct card *scan = card->nextcard;
+                    while (scan && scan->line) {
+                        if (strncasecmp(scan->line, ".ends", 5) == 0) break;
+                        char *scl = scan->line;
+                        char found_ident[256];
+                        bool found = false;
+                        for (char *p = scl; *p; p++) {
+                            if (*p == '{') {
+                                char *end = strchr(p + 1, '}');
+                                if (!end) continue;
+                                size_t nlen = end - (p + 1);
+                                if (nlen == 0) continue;
+
+                                /* Check if the entire {content} is a simple identifier */
+                                if (nlen < sizeof(found_ident)) {
+                                    strncpy(found_ident, p + 1, nlen);
+                                    found_ident[nlen] = '\0';
+                                    if (strcasecmp(tok, found_ident) == 0 && strcmp(tok, found_ident) != 0) {
+                                        found = true;
+                                        break;
+                                    }
+                                }
+
+                                /* Or tokenize the expression inside {} to find embedded identifiers */
+                                {
+                                    char expr[1024];
+                                    if (nlen < sizeof(expr)) {
+                                        strncpy(expr, p + 1, nlen);
+                                        expr[nlen] = '\0';
+                                        char *xp = expr;
+                                        while (*xp) {
+                                            while (*xp && !isalnum_c(*xp) && *xp != '_') xp++;
+                                            if (!*xp) break;
+                                            char *tok_start = xp;
+                                            while (*xp && (isalnum_c(*xp) || *xp == '_')) xp++;
+                                            size_t tlen = xp - tok_start;
+                                            char scratch[256];
+                                            if (tlen >= sizeof(scratch)) continue;
+                                            strncpy(scratch, tok_start, tlen);
+                                            scratch[tlen] = '\0';
+                                            if (strcasecmp(tok, scratch) == 0 && strcmp(tok, scratch) != 0) {
+                                                strncpy(found_ident, scratch, sizeof(found_ident)-1);
+                                                found_ident[sizeof(found_ident)-1] = '\0';
+                                                found = true;
+                                                break;
+                                            }
+                                        }
+                                        if (found) break;
+                                    }
+                                }
+                            }
+                        }
+                        if (found) {
+                            /* Inject alias card right before scan */
+                            struct card *alias = TMALLOC(struct card, 1);
+                            alias->line = tprintf(".param %s=%s", found_ident, tok);
+                            struct card *prev = card;
+                            while (prev && prev->nextcard != scan)
+                                prev = prev->nextcard;
+                            if (prev) {
+                                alias->nextcard = prev->nextcard;
+                                prev->nextcard = alias;
+                            }
+                        }
+                        scan = scan->nextcard;
+                    }
+                    tfree(tok);
+                    tok = gettok(&ps);
+                }
+                tfree(ps_copy);
+            }
+        }
+    }
+
+    /* Replace 1/Gmin (case-insensitive) in .param lines with 1e12.
+     * Gmin is a SPICE engine constant (minimum conductance, default 1e-12)
+     * but ngspice does not expose it as a user-accessible .param variable.
+     * LTspice subcircuits like Lrememb use 1/Gmin for high-impedance bias
+     * resistors. Replacing with 1e12 (= 1/1e-12) preserves the intent. */
+    for (card = oldcard; card; card = card->nextcard) {
+        char *cl = card->line;
+        if (!cl) continue;
+        if (cl[0] != '.' || strncasecmp(cl + 1, "param", 5) != 0) continue;
+        if (!strstr(cl, "/Gmin") && !strstr(cl, "/gmin") && !strstr(cl, "/GMIN")) continue;
+        char *result = tmalloc(strlen(cl) + 1);
+        char *dst = result;
+        char *src = cl;
+        while (*src) {
+            if ((src[0] == '/' || src[0] == '1') &&
+                strncasecmp(src[0] == '/' ? src + 1 : src, "Gmin", 4) == 0 &&
+                !isalnum_c(src[5])) {
+                /* Check for 1/Gmin pattern */
+                if (src[0] == '1' && src[1] == '/' &&
+                    strncasecmp(src + 2, "Gmin", 4) == 0) {
+                    memcpy(dst, "1e12", 4);
+                    dst += 4;
+                    src += 6;
+                } else if (src[0] == '/' &&
+                    strncasecmp(src + 1, "Gmin", 4) == 0) {
+                    *dst++ = '/';
+                    memcpy(dst, "1e12", 4);
+                    dst += 4;
+                    src += 5;
+                } else {
+                    *dst++ = *src++;
+                }
+            } else {
+                *dst++ = *src++;
+            }
+        }
+        *dst = '\0';
+        tfree(card->line);
+        card->line = result;
+    }
+
+    /* Pass 3: inject case-variant aliases for subcircuit header parameters.
+     * Subcircuit params like D=0 in ".subckt Rwire n1 n2 D=0" are case-sensitive
+     * in ngspice but LTspice resolves case-insensitively. Scan body cards for
+     * case-variant identifiers in {expressions} and inject .param alias cards. */
+    for (card = oldcard; card; card = card->nextcard) {
+        char *cl = card->line;
+        if (!cl) continue;
+        if (!ciprefix(".subckt", cl)) continue;
+        /* Tokenize the .subckt line: .subckt name pin1 pin2 ... param=val ... */
+        char *scopy = copy(cl);
+        char *sp = scopy;
+        gettok(&sp); /* skip .subckt */
+        gettok(&sp); /* skip subckt name */
+        /* Collect pin names (tokens without '=') until we hit param=val pairs */
+        char *pin;
+        while ((pin = gettok(&sp)) != NULL) {
+            if (strchr(pin, '=')) {
+                /* This is a subcircuit parameter */
+                char *eq = strchr(pin, '=');
+                *eq = '\0';
+                char *pname = pin;
+                /* Scan body cards until .ends for case-variant {ident} or expression ident */
+                struct card *scan = card->nextcard;
+                while (scan && scan->line) {
+                    if (strncasecmp(scan->line, ".ends", 5) == 0) break;
+                    char *scl = scan->line;
+                    char found_ident[256];
+                    bool found = false;
+                    for (char *cp = scl; *cp; cp++) {
+                        if (*cp == '{') {
+                            char *end = strchr(cp + 1, '}');
+                            if (!end) continue;
+                            size_t nlen = end - (cp + 1);
+                            if (nlen == 0) continue;
+                            /* Check entire {content} as identifier */
+                            if (nlen < sizeof(found_ident)) {
+                                strncpy(found_ident, cp + 1, nlen);
+                                found_ident[nlen] = '\0';
+                                if (strcasecmp(pname, found_ident) == 0 && strcmp(pname, found_ident) != 0) {
+                                    found = true;
+                                    break;
+                                }
+                            }
+                            /* Tokenize expression for embedded identifiers */
+                            {
+                                char expr[1024];
+                                if (nlen < sizeof(expr)) {
+                                    strncpy(expr, cp + 1, nlen);
+                                    expr[nlen] = '\0';
+                                    char *xp = expr;
+                                    while (*xp) {
+                                        while (*xp && !isalnum_c(*xp) && *xp != '_') xp++;
+                                        if (!*xp) break;
+                                        char *tok_start = xp;
+                                        while (*xp && (isalnum_c(*xp) || *xp == '_')) xp++;
+                                        size_t tlen = xp - tok_start;
+                                        char scratch[256];
+                                        if (tlen >= sizeof(scratch)) continue;
+                                        strncpy(scratch, tok_start, tlen);
+                                        scratch[tlen] = '\0';
+                                        if (strcasecmp(pname, scratch) == 0 && strcmp(pname, scratch) != 0) {
+                                            strncpy(found_ident, scratch, sizeof(found_ident)-1);
+                                            found_ident[sizeof(found_ident)-1] = '\0';
+                                            found = true;
+                                            break;
+                                        }
+                                    }
+                                    if (found) break;
+                                }
+                            }
+                        }
+                    }
+                    if (found) {
+                        struct card *alias = TMALLOC(struct card, 1);
+                        alias->line = tprintf(".param %s=%s", found_ident, pname);
+                        struct card *prev = card;
+                        while (prev && prev->nextcard != scan)
+                            prev = prev->nextcard;
+                        if (prev) {
+                            alias->nextcard = prev->nextcard;
+                            prev->nextcard = alias;
+                        }
+                    }
+                    scan = scan->nextcard;
+                }
+            }
+            tfree(pin);
+        }
+        tfree(scopy);
+    }
+
+    /* Pass 4: inject default .param values for undeclared {ident} references in
+     * subcircuit bodies. LTspice treats undeclared params as having implicit
+     * defaults (0 or 1 depending on context), but ngspice errors on undefined
+     * parameters. Scan each subcircuit's body for {ident} patterns, collect
+     * declared param names (from .subckt header params and .param cards), and
+     * inject .param ident=1 for any undeclared reference. */
+    for (card = oldcard; card; card = card->nextcard) {
+        char *cl = card->line;
+        if (!cl) continue;
+        if (!ciprefix(".subckt", cl)) continue;
+
+        /* Collect declared param names from this subcircuit */
+        char *scopy = copy(cl);
+        char *sp = scopy;
+        gettok(&sp); /* skip .subckt */
+        gettok(&sp); /* skip name */
+
+        /* Use a simple fixed-size array for param names (max 64 params) */
+        char *declared[64];
+        int nd = 0;
+
+        /* Collect from .subckt header */
+        char *tok;
+        while ((tok = gettok(&sp)) != NULL && nd < 64) {
+            if (strchr(tok, '=')) {
+                char *eq = strchr(tok, '=');
+                *eq = '\0';
+                declared[nd++] = copy(tok);
+            }
+            tfree(tok);
+        }
+        tfree(scopy);
+
+        /* Also scan body .param cards for additional declared params */
+        struct card *scanp = card->nextcard;
+        while (scanp && scanp->line) {
+            if (strncasecmp(scanp->line, ".ends", 5) == 0) break;
+            char *scl = scanp->line;
+            if (scl[0] == '.' && strncasecmp(scl + 1, "param", 5) == 0) {
+                char *pcopy = copy(scl + 7);
+                char *pp = pcopy;
+                char *ptok;
+                while ((ptok = gettok(&pp)) != NULL && nd < 64) {
+                    char *eq = strchr(ptok, '=');
+                    if (eq) {
+                        *eq = '\0';
+                        bool already = false;
+                        for (int i = 0; i < nd; i++) {
+                            if (strcasecmp(declared[i], ptok) == 0) {
+                                already = true;
+                                break;
+                            }
+                        }
+                        if (!already)
+                            declared[nd++] = copy(ptok);
+                    }
+                    tfree(ptok);
+                }
+                tfree(pcopy);
+            }
+            scanp = scanp->nextcard;
+        }
+
+        /* Now scan body for {ident} patterns where ident is a simple identifier */
+        scanp = card->nextcard;
+        while (scanp && scanp->line) {
+            if (strncasecmp(scanp->line, ".ends", 5) == 0) break;
+            char *scl = scanp->line;
+            for (char *cp = scl; *cp; cp++) {
+                if (*cp == '{') {
+                    char *end = strchr(cp + 1, '}');
+                    if (!end) continue;
+                    size_t nlen = end - (cp + 1);
+                    if (nlen == 0 || nlen > 255) continue;
+
+                    /* Check if it's a simple identifier */
+                    bool simple = true;
+                    for (size_t i = 0; i < nlen; i++) {
+                        char c = cp[1 + i];
+                        if (!isalnum_c(c) && c != '_') { simple = false; break; }
+                    }
+                    /* Extract simple identifier or tokenize expression */
+                    {
+                    char content[256];
+                    strncpy(content, cp + 1, nlen);
+                    content[nlen] = '\0';
+
+                    if (simple) {
+                        bool found = false;
+                        for (int i = 0; i < nd; i++) {
+                            if (strcasecmp(declared[i], content) == 0) {
+                                found = true;
+                                break;
+                            }
+                        }
+                        if (!found && nd < 64) {
+                            declared[nd++] = copy(content);
+                            const char *defval = (strcasecmp(content, "temp") == 0) ? "27" : "1";
+                            char *pline = tprintf(".param %s=%s", content, defval);
+                            insert_new_line(card, pline, 0, card->linenum_orig, card->linesource);
+                        }
+                    } else {
+                        /* Expression - tokenize to find embedded identifiers */
+                        char *xp = content;
+                        while (*xp) {
+                            while (*xp && !isalnum_c(*xp) && *xp != '_') xp++;
+                            if (!*xp) break;
+                            char *tok_start = xp;
+                            while (*xp && (isalnum_c(*xp) || *xp == '_')) xp++;
+                            size_t tlen = xp - tok_start;
+                            char scratch[256];
+                            if (tlen >= sizeof(scratch)) continue;
+                            strncpy(scratch, tok_start, tlen);
+                            scratch[tlen] = '\0';
+
+                            /* Skip if it starts with a digit or '.' (number or scaled number like 1u, 10k) */
+                            if (isdigit_c(scratch[0]) || scratch[0] == '.') continue;
+
+                            bool found = false;
+                            for (int i = 0; i < nd; i++) {
+                                if (strcasecmp(declared[i], scratch) == 0) {
+                                    found = true;
+                                    break;
+                                }
+                            }
+                            if (strcasecmp(scratch, "vt") == 0 ||
+                                strcasecmp(scratch, "pi") == 0 ||
+                                strcasecmp(scratch, "v") == 0) found = true;
+
+                            if (!found && nd < 64) {
+                                declared[nd++] = copy(scratch);
+                                const char *defval = (strcasecmp(scratch, "temp") == 0) ? "27" : "1";
+                                char *pline = tprintf(".param %s=%s", scratch, defval);
+                            insert_new_line(card, pline, 0, card->linenum_orig, card->linesource);
+                            }
+                        }
+                    }
+                    }
+
+                    cp = end;
+                }
+            }
+            scanp = scanp->nextcard;
+        }
+
+        for (int i = 0; i < nd; i++)
+            tfree(declared[i]);
+    }
+
+    /* Pass 5: fix divide-by-zero in R/L/C element expressions.
+     * When a .subckt header param defaults to 0 and is used in a
+     * denominator in an R/L/C body card {expr}, the expression
+     * evaluates to inf. Inject .param <ident>=1u to provide a
+     * small non-zero default. */
+    for (card = oldcard; card; card = card->nextcard) {
+        char *cl = card->line;
+        if (!cl) continue;
+        if (!ciprefix(".subckt", cl)) continue;
+
+        /* Collect header params with =0 default */
+        char scopy[1024];
+        if (strlen(cl) >= sizeof(scopy)) continue;
+        strcpy(scopy, cl);
+        char *sp = scopy;
+        gettok(&sp); /* .subckt */
+        gettok(&sp); /* name */
+        char *zero_params[64];
+        int nz = 0;
+        char *tok;
+        while ((tok = gettok(&sp)) != NULL && nz < 64) {
+            char *eq = strchr(tok, '=');
+            if (eq) {
+                *eq = '\0';
+                char *val = eq + 1;
+                if (strcmp(val, "0") == 0 || strcmp(val, "0.0") == 0) {
+                    zero_params[nz++] = copy(tok);
+                }
+            }
+            tfree(tok);
+        }
+
+        if (nz == 0) continue; /* no zero-valued params to fix */
+
+        /* Scan body for R/L/C cards with {expr} containing / */
+        struct card *scan = card->nextcard;
+        while (scan && scan->line) {
+            if (strncasecmp(scan->line, ".ends", 5) == 0) break;
+            char c0 = tolower_c(scan->line[0]);
+            if (c0 != 'r' && c0 != 'l' && c0 != 'c') { scan = scan->nextcard; continue; }
+            char *scl = scan->line;
+            char *brace_start = strchr(scl, '{');
+            if (!brace_start) { scan = scan->nextcard; continue; }
+            char *brace_end = strchr(brace_start + 1, '}');
+            if (!brace_end) { scan = scan->nextcard; continue; }
+            if (!strchr(brace_start, '/')) { scan = scan->nextcard; continue; }
+
+            size_t nlen = brace_end - (brace_start + 1);
+            if (nlen == 0 || nlen > 255) { scan = scan->nextcard; continue; }
+            char content[256];
+            strncpy(content, brace_start + 1, nlen);
+            content[nlen] = '\0';
+
+            /* Tokenize expression to find identifiers */
+            char *xp = content;
+            while (*xp) {
+                while (*xp && !isalnum_c(*xp) && *xp != '_') xp++;
+                if (!*xp) break;
+                char *tokstart = xp;
+                while (*xp && (isalnum_c(*xp) || *xp == '_')) xp++;
+                size_t tlen = xp - tokstart;
+                char scratch[256];
+                if (tlen >= sizeof(scratch)) break;
+                strncpy(scratch, tokstart, tlen);
+                scratch[tlen] = '\0';
+
+                /* Skip if it starts with a digit or is a reserved name */
+                if (isdigit_c(scratch[0]) || scratch[0] == '.') continue;
+                if (strcasecmp(scratch, "temp") == 0 ||
+                    strcasecmp(scratch, "vt") == 0 ||
+                    strcasecmp(scratch, "pi") == 0 ||
+                    strcasecmp(scratch, "v") == 0) continue;
+
+                /* Check if this identifier matches a zero-valued header param */
+                for (int zi = 0; zi < nz; zi++) {
+                    if (strcasecmp(zero_params[zi], scratch) == 0) {
+                        /* Inject .param with small non-zero default */
+                        char *pline = tprintf(".param %s=1u", zero_params[zi]);
+                        insert_new_line(card, pline, 0, card->linenum_orig, card->linesource);
+                        /* Remove from zero_params to avoid duplicate injection */
+                        tfree(zero_params[zi]);
+                        zero_params[zi] = zero_params[--nz];
+                        break;
+                    }
+                }
+            }
+            scan = scan->nextcard;
+        }
+
+        for (int i = 0; i < nz; i++)
+            tfree(zero_params[i]);
     }
 
     /* Replace PSpice/LTspice & (logical AND) with ngspice &&, and | (logical OR) with ||.
@@ -2095,12 +2762,15 @@ struct card *ltspice_compat(struct card *oldcard)
         card->line = result;
     }
 
-    /* Strip {braces} from .param value expressions: LTspice allows {identifier}
-     * to reference parameters inside .param statements, but ngspice does not
-     * accept curly braces in .param values. Only strip braces around simple
-     * identifiers, not around expressions with operators (which ngspice handles).
+    /* Strip/replace {braces} from .param value expressions: LTspice allows
+     * {identifier} and {expression} inside .param statements, but ngspice does
+     * not accept curly braces in .param values. For simple identifiers, strip
+     * the braces entirely. For expressions with operators, replace {} with ()
+     * to preserve operator precedence.
      * Example: .param Vh0=({ion}-{ioff})/({ion}+{ioff})/2
-     *   ->   .param Vh0=(ion-ioff)/(ion+ioff)/2 */
+     *   ->   .param Vh0=(ion-ioff)/(ion+ioff)/2
+     * Example: .param ron=x*(14.3/{vdd-0.7})**0.75
+     *   ->   .param ron=x*(14.3/(vdd-0.7))**0.75 */
     for (card = oldcard; card; card = card->nextcard) {
         char *cl = card->line;
         if (!cl) continue;
@@ -2116,7 +2786,8 @@ struct card *ltspice_compat(struct card *oldcard)
         }
         if (!has_open) continue;
 
-        char *result = tmalloc(llen + 1);
+        /* Result may be up to original length + 1 per brace pair unchanged */
+        char *result = tmalloc(llen * 2 + 1);
         char *dst = result;
         char *src = cl;
 
@@ -2137,14 +2808,28 @@ struct card *ltspice_compat(struct card *oldcard)
                         dst += ident_len;
                         src = end + 1;
                         continue;
+                    } else {
+                        /* Expression with operators: replace {} with () */
+                        size_t expr_len = end - (src + 1);
+                        *dst++ = '(';
+                        memcpy(dst, src + 1, expr_len);
+                        dst += expr_len;
+                        *dst++ = ')';
+                        src = end + 1;
+                        continue;
                     }
                 }
             }
             *dst++ = *src++;
         }
         *dst = '\0';
-        tfree(card->line);
-        card->line = result;
+        /* Only update if something changed */
+        if (strcmp(result, cl) != 0) {
+            tfree(card->line);
+            card->line = result;
+        } else {
+            tfree(result);
+        }
     }
 
     /* Replace LTspice scale notation: a digit after a scale suffix (u/m/k/M/G/T)
@@ -2175,6 +2860,17 @@ struct card *ltspice_compat(struct card *oldcard)
             if (isdigit_c(*src) && *(src+1) && *(src+2)) {
                 char scale = *(src+1);
                 if (strchr("uUmMkKgGtT", scale) && isdigit_c(*(src+2))) {
+                    /* Check context: scan backwards to find start of the token.
+                     * If the token starts with a letter or '_', it's a name (skip).
+                     * If it starts with a digit or '=', it's a value (transform). */
+                    char *tok_start = src;
+                    while (tok_start > cl && (isdigit_c(*(tok_start-1)) || *(tok_start-1) == '.'))
+                        tok_start--;
+                    if (tok_start > cl && (isalpha_c(*(tok_start-1)) || *(tok_start-1) == '_')) {
+                        /* Part of a name - do not transform */
+                        *dst++ = *src++;
+                        continue;
+                    }
                     while (isdigit_c(*src)) *dst++ = *src++;
                     char scale_ch = *src++;
                     *dst++ = '.';
@@ -2499,31 +3195,49 @@ struct card *ltspice_compat(struct card *oldcard)
         card->line = result;
     }
 
-    /* Strip LTspice-only Rpar=, Cpar=, tripdt=, tripdv= from B-sources */
+    /* Strip LTspice-only Rpar=, Cpar=, tripdt=, tripdv= from B-sources 
+     * and add parallel R/C components if present to avoid singular matrix. */
     for (card = oldcard; card; card = card->nextcard) {
         char *cl = card->line;
         if (!cl) continue;
         if (cl[0] != 'b' && cl[0] != 'B') continue;
         if (cl[1] == '.' || cl[1] == '\0') continue;
+
+        char bname[128], n1[128], n2[128];
+        if (sscanf(cl, "%127s %127s %127s", bname, n1, n2) < 3) continue;
+
+        char rpar_str[64] = "", cpar_str[64] = "";
         int any_stripped = 0;
         char *result = tmalloc(strlen(cl) + 1);
         char *dst = result;
         char *src = cl;
         while (*src) {
-            if ((tolower_c(src[0]) == 'r' && tolower_c(src[1]) == 'p' &&
-                 tolower_c(src[2]) == 'a' && tolower_c(src[3]) == 'r' && src[4] == '=') ||
-                (tolower_c(src[0]) == 'c' && tolower_c(src[1]) == 'p' &&
-                 tolower_c(src[2]) == 'a' && tolower_c(src[3]) == 'r' && src[4] == '=') ||
-                (tolower_c(src[0]) == 't' && tolower_c(src[1]) == 'r' &&
-                 tolower_c(src[2]) == 'i' && tolower_c(src[3]) == 'p' &&
-                 tolower_c(src[4]) == 'd' && tolower_c(src[5]) == 't' && src[6] == '=') ||
-                (tolower_c(src[0]) == 't' && tolower_c(src[1]) == 'r' &&
-                 tolower_c(src[2]) == 'i' && tolower_c(src[3]) == 'p' &&
-                 tolower_c(src[4]) == 'd' && tolower_c(src[5]) == 'v' && src[6] == '=')) {
-                int kwlen = (tolower_c(src[0]) == 't') ? 7 : 5;
-                src += kwlen;
-                while (*src && *src != ' ' && *src != '\t' && *src != ';')
-                    src++;
+            bool is_rpar = (tolower_c(src[0]) == 'r' && tolower_c(src[1]) == 'p' &&
+                            tolower_c(src[2]) == 'a' && tolower_c(src[3]) == 'r' && src[4] == '=');
+            bool is_cpar = (tolower_c(src[0]) == 'c' && tolower_c(src[1]) == 'p' &&
+                            tolower_c(src[2]) == 'a' && tolower_c(src[3]) == 'r' && src[4] == '=');
+            bool is_tripdt = (tolower_c(src[0]) == 't' && tolower_c(src[1]) == 'r' &&
+                              tolower_c(src[2]) == 'i' && tolower_c(src[3]) == 'p' &&
+                              tolower_c(src[4]) == 'd' && tolower_c(src[5]) == 't' && src[6] == '=');
+            bool is_tripdv = (tolower_c(src[0]) == 't' && tolower_c(src[1]) == 'r' &&
+                              tolower_c(src[2]) == 'i' && tolower_c(src[3]) == 'p' &&
+                              tolower_c(src[4]) == 'd' && tolower_c(src[5]) == 'v' && src[6] == '=');
+
+            if (is_rpar || is_cpar || is_tripdt || is_tripdv) {
+                int kwlen = (is_tripdt || is_tripdv) ? 7 : 5;
+                const char *val_start = src + kwlen;
+                char val_buf[64];
+                int k = 0;
+                while (val_start[k] && val_start[k] != ' ' && val_start[k] != '\t' && val_start[k] != ';') {
+                    if (k < 63) val_buf[k] = val_start[k];
+                    k++;
+                }
+                val_buf[k] = '\0';
+                
+                if (is_rpar) strcpy(rpar_str, val_buf);
+                else if (is_cpar) strcpy(cpar_str, val_buf);
+
+                src += kwlen + k;
                 while (*src == ' ' || *src == '\t') src++;
                 any_stripped = 1;
                 continue;
@@ -2534,6 +3248,16 @@ struct card *ltspice_compat(struct card *oldcard)
         if (any_stripped) {
             tfree(card->line);
             card->line = result;
+            
+            struct card *insert_pos = card;
+            if (rpar_str[0]) {
+                char *rline = tprintf("R_lt_%s_rpar %s %s %s", bname+1, n1, n2, rpar_str);
+                insert_pos = insert_new_line(insert_pos, rline, card->linenum, card->linenum_orig, card->linesource);
+            }
+            if (cpar_str[0]) {
+                char *cline = tprintf("C_lt_%s_cpar %s %s %s", bname+1, n1, n2, cpar_str);
+                insert_pos = insert_new_line(insert_pos, cline, card->linenum, card->linenum_orig, card->linesource);
+            }
         } else {
             tfree(result);
         }
@@ -2625,18 +3349,29 @@ struct card *ltspice_compat(struct card *oldcard)
             val2_start++;
             while (*val2_start == ' ' || *val2_start == '\t') val2_start++;
         }
+        int has_val2 = 0;
+        bool skip_val2_as_keyword = 0;
         int has_parens = 0;
-        if (*val2_start == '(') {
-            has_parens = 1;
-            val2_start++;
-            while (*val2_start == ' ' || *val2_start == '\t') val2_start++;
+        char *val2_end = NULL;
+        /* If the "second value" contains an '=' it is actually a separate
+         * keyword=value pair (e.g. TC=9m, TC2=5.5u) — don't consume it. */
+        if (has_comma && strchr(val2_start, '=')) {
+            skip_val2_as_keyword = 1;
+            has_val2 = 0;
+            has_comma = 0;
+        } else {
+            if (*val2_start == '(') {
+                has_parens = 1;
+                val2_start++;
+                while (*val2_start == ' ' || *val2_start == '\t') val2_start++;
+            }
+            val2_end = val2_start;
+            if (*val2_end) {
+                while (*val2_end && *val2_end != ' ' && *val2_end != '\t' && *val2_end != ')' &&
+                       *val2_end != ';' && *val2_end != ',') val2_end++;
+            }
+            has_val2 = (val2_end > val2_start);
         }
-        char *val2_end = val2_start;
-        if (*val2_end) {
-            while (*val2_end && *val2_end != ' ' && *val2_end != '\t' && *val2_end != ')' &&
-                   *val2_end != ';' && *val2_end != ',') val2_end++;
-        }
-        int has_val2 = (val2_end > val2_start);
         /* Build new line replacing TC= with tc1= tc2= */
         size_t len = strlen(cl);
         char *result = tmalloc(len + 64);
@@ -2662,11 +3397,53 @@ struct card *ltspice_compat(struct card *oldcard)
             }
         } else {
             suf_start = val1_end;
+            if (skip_val2_as_keyword) {
+                /* Skip comma and whitespace after val1 when the "second value"
+                 * was actually a separate keyword (e.g. TC2=val) */
+                while (*suf_start == ' ' || *suf_start == '\t' || *suf_start == ',') suf_start++;
+            }
         }
-        size_t suf = strlen(suf_start);
-        memcpy(d, suf_start, suf + 1);
+        if (*suf_start) {
+            if (!has_val2) *d++ = ' ';
+            size_t suf = strlen(suf_start);
+            memcpy(d, suf_start, suf + 1);
+        } else {
+            *d = '\0';
+        }
         tfree(card->line);
         card->line = result;
+    }
+
+    /* Convert TC1=value, TC2=value to tc1=value, tc2=value on R/L/C lines */
+    for (card = oldcard; card; card = card->nextcard) {
+        char *cl = card->line;
+        if (!cl) continue;
+        char c0 = cl[0];
+        if (c0 != 'r' && c0 != 'R' && c0 != 'c' && c0 != 'C' &&
+            c0 != 'l' && c0 != 'L') continue;
+        if (cl[1] == '.' || cl[1] == '\0') continue;
+        /* Replace TC1= with tc1= */
+        char *p = cl;
+        int replaced = 0;
+        while ((p = strstr(p, "TC1=")) != NULL) {
+            if (p == cl || (p[-1] == ' ' || p[-1] == '\t')) {
+                p[0] = 't'; p[1] = 'c'; p[2] = '1';
+                replaced = 1;
+                p += 4;
+            } else {
+                p += 1;
+            }
+        }
+        p = cl;
+        while ((p = strstr(p, "TC2=")) != NULL) {
+            if (p == cl || (p[-1] == ' ' || p[-1] == '\t')) {
+                p[0] = 't'; p[1] = 'c'; p[2] = '2';
+                replaced = 1;
+                p += 4;
+            } else {
+                p += 1;
+            }
+        }
     }
 
     /* Add braces around unbraced R=value, L=value, C=value expressions.
@@ -2722,6 +3499,52 @@ struct card *ltspice_compat(struct card *oldcard)
         memcpy(result + prefix_len + 2 + (vend - val), vend, suffix_len + 1);
         tfree(card->line);
         card->line = result;
+    }
+
+    /* Convert LTspice F-source value={expr} to B-source I = expr.
+     * LTspice syntax: F<name> <n+> <n-> value={<expr>}
+     * ngspice:         B<name> <n+> <n-> I = <expr>
+     * The B-source runtime evaluator handles the expression correctly,
+     * while the ngspice F-source parser cannot handle value={} syntax. */
+    for (card = oldcard; card; card = card->nextcard) {
+        char *cl = card->line;
+        if (!cl) continue;
+        if (cl[0] != 'f' && cl[0] != 'F') continue;
+        if (cl[1] == '.' || cl[1] == '\0') continue;
+        char *value_kw = strstr(cl + 1, "value=");
+        if (!value_kw) continue;
+        /* Find the opening brace after value= */
+        char *brace = value_kw + 6;
+        while (*brace == ' ' || *brace == '\t') brace++;
+        if (*brace != '{') continue;
+        char *brace_start = brace;
+        char *brace_end = brace + 1;
+        int depth = 1;
+        while (*brace_end && depth > 0) {
+            if (*brace_end == '{') depth++;
+            else if (*brace_end == '}') depth--;
+            if (depth > 0) brace_end++;
+        }
+        if (depth != 0) continue;
+        /* Extract nodes: <name> <n+> <n-> */
+        char *cut = cl;
+        char *name_tok = gettok(&cut);
+        char *n1_tok = gettok(&cut);
+        char *n2_tok = gettok(&cut);
+        if (!name_tok || !n1_tok || !n2_tok) {
+            tfree(name_tok); tfree(n1_tok); tfree(n2_tok);
+            continue;
+        }
+        /* Extract expression inside braces */
+        size_t expr_len = brace_end - brace_start - 1;
+        char *expr = tmalloc(expr_len + 1);
+        memcpy(expr, brace_start + 1, expr_len);
+        expr[expr_len] = '\0';
+        /* Build B-source line: B<name> <n+> <n-> I = <expr> */
+        char *bsrc = tprintf("B%s %s %s I = %s", name_tok, n1_tok, n2_tok, expr);
+        tfree(card->line);
+        card->line = bsrc;
+        tfree(name_tok); tfree(n1_tok); tfree(n2_tok); tfree(expr);
     }
 
     /* Strip LTspice-only Rpar=, Rser=, Lser=, Cpar= from passive C/L element lines */
@@ -2986,22 +3809,37 @@ struct card *ltspice_compat(struct card *oldcard)
     /* Inject .param pi=... so {PI} in subcircuit expressions resolves */
     new_str = copy(".param pi=3.141592653589793");
     nextcard = insert_new_line(nextcard, new_str, 5, 0, "internal");
-    /* Inject .param temp = 'temper' so that {temp} (LTspice built-in global)
-     * resolves to the simulation temperature in Celsius. */
-    new_str = copy(".param temp = 'temper'");
+    /* add predefined params TEMP, VT, GMIN to beginning of deck */
+    new_str = copy(".param temp = 27");
     nextcard = insert_new_line(nextcard, new_str, 6, 0, "internal");
-    /* Inject .param vt = ... (thermal voltage) for convenience */
-    new_str = copy(".param vt = '(temper + 273.15) * 8.6173303e-5'");
+    new_str = copy(".param vt = 0.025865");
     nextcard = insert_new_line(nextcard, new_str, 7, 0, "internal");
+    new_str = copy(".param gmin = 1e-12");
+    nextcard = insert_new_line(nextcard, new_str, 8, 0, "internal");
+    /* add funcs limit, pwr, pwrs, stp, if, int */
+    new_str = copy(".func limit(x, a, b) { ternary_fcn(a > b, max(min(x, a), b), max(min(x, b), a)) }");
+    nextcard = insert_new_line(nextcard, new_str, 9, 0, "internal");
+    new_str = copy(".func pwr(x, a) { pow(x, a) }");
+    nextcard = insert_new_line(nextcard, new_str, 10, 0, "internal");
+    new_str = copy(".func pwrs(x, a) { sgn(x) * pow(x, a) }");
+    nextcard = insert_new_line(nextcard, new_str, 11, 0, "internal");
+    new_str = copy(".func stp(x) { u(x) }");
+    nextcard = insert_new_line(nextcard, new_str, 12, 0, "internal");
+    new_str = copy(".func if(a, b, c) {ternary_fcn( a , b , c )}");
+    nextcard = insert_new_line(nextcard, new_str, 13, 0, "internal");
+    new_str = copy(".func int(x) { sgn(x)*floor(abs(x)) }");
+    nextcard = insert_new_line(nextcard, new_str, 14, 0, "internal");
     nextcard->nextcard = oldcard;
 
-    /* Inject .param temp and vt inside each subcircuit for scoped access */
-    for (card = oldcard; card; card = card->nextcard) {
-        if (ciprefix(".subckt", card->line)) {
-            char *s1 = copy(".param temp = 'temper'");
-            insert_new_line(card, s1, 0, card->linenum_orig, card->linesource);
-            char *s2 = copy(".param vt = '(temper + 273.15) * 8.6173303e-5'");
-            insert_new_line(card->nextcard, s2, 1, card->linenum_orig, card->linesource);
+    /* Inject .param temp = 27 inside each subcircuit so that {temp} from
+     * LTspice resolves to the default simulation temperature. */
+    for (card = nextcard; card; card = card->nextcard) {
+        char *cut_line = card->line;
+        if (ciprefix(".subckt", cut_line)) {
+            new_str = copy(".param temp = 27");
+            nextcard = insert_new_line(card, new_str, 0, card->linenum_orig, card->linesource);
+            new_str = copy(".param vt = 0.025865");
+            insert_new_line(nextcard, new_str, 1, card->linenum_orig, card->linesource);
         }
     }
 
@@ -3305,261 +4143,104 @@ static void add_dac_pulldowns(struct card *start)
     }
 }
 
-/* do not modify oldcard address, insert everything after first line only */
-void ltspice_compat_a(struct card *oldcard)
-{
-    /* First pass: Transform LTspice fixed 8-pin A-devices to ngspice format */
-    ltspice_a_device_transform(oldcard);
+/* ---- LTspice device type helpers ---- */
 
-    /* Add pulldowns on DAC output nodes that may lack DC paths */
-    add_dac_pulldowns(oldcard);
-
-    /* Then run existing compat */
-    oldcard->nextcard = ltspice_compat(oldcard->nextcard);
-}
-
-/**** LTspice A-device transformation **************
- * Transform LTspice fixed 8-pin A-device format to ngspice XSPICE format.
- * LTspice syntax: A1 n1 n2 n3 n4 n5 n6 n7 n8 DEVICETYPE
- * where unused pins are tied to 0.
- *
- * ngspice syntax: A1 <connections> <modelname>
- * where connections depend on the code model's ifspec.ifs.
- *
- * Maps LTspice device types to ngspice equivalents:
- *   COUNTER  -> d_fdiv (frequency divider with internal counter)
- *   SCHMITT  -> d_buffer with vhigh/vlow thresholds
- *   BUF      -> d_buffer
- *   NOT      -> d_inverter
- *   AND      -> d_and (variable inputs)
- *   OR       -> d_or (variable inputs)
- *   NAND     -> d_nand (variable inputs)
- *   NOR      -> d_nor (variable inputs)
- *   XOR      -> d_xor (variable inputs)
- *   XNOR     -> d_xnor (variable inputs)
- *   MUX      -> d_mux (if available) or d_genlut
- *   DFF      -> d_dff
- *   JKFF     -> d_jkff
- *   SRFF     -> d_srff
- *   DLATCH   -> d_dlatch
- */
-
-/* Count tokens in a string */
-static int count_tokens_a(char *line)
-{
-    int count = 0;
-    char *s = line;
-    char c;
-
-    while ((c = *s) != '\0') {
-        if (c == ' ' || c == '\t') {
-            s++;
-            continue;
-        }
-        count++;
-        while ((c = *s) != '\0' && c != ' ' && c != '\t') s++;
-    }
-    return count;
-}
-
-/* Map LTspice device type to ngspice model type */
-static const char* ltspice_devtype_to_ngspice(const char *devtype, char *mapped_type, size_t mapped_size)
-{
-    const char *upper = devtype;
-    char buf[64];
-    int i;
-
-    for (i = 0; i < (int)strlen(devtype) && i < 63; i++)
-        buf[i] = toupper_c(devtype[i]);
-    buf[i] = '\0';
-    upper = buf;
-
-    if (strcmp(upper, "COUNTER") == 0) {
-        snprintf(mapped_type, mapped_size, "d_counter");
-        return "d_counter";
-    }
-    if (strcmp(upper, "SCHMITT") == 0 || strcmp(upper, "SCHMITT_BUF") == 0) {
-        snprintf(mapped_type, mapped_size, "d_buffer");
-        return "d_buffer";
-    }
-    if (strcmp(upper, "BUF") == 0 || strcmp(upper, "BUFFER") == 0) {
-        snprintf(mapped_type, mapped_size, "d_buffer");
-        return "d_buffer";
-    }
-    if (strcmp(upper, "NOT") == 0 || strcmp(upper, "INV") == 0 || strcmp(upper, "INVERTER") == 0) {
-        snprintf(mapped_type, mapped_size, "d_inverter");
-        return "d_inverter";
-    }
-    if (strcmp(upper, "AND") == 0) {
-        snprintf(mapped_type, mapped_size, "d_and");
-        return "d_and";
-    }
-    if (strcmp(upper, "OR") == 0) {
-        snprintf(mapped_type, mapped_size, "d_or");
-        return "d_or";
-    }
-    if (strcmp(upper, "NAND") == 0) {
-        snprintf(mapped_type, mapped_size, "d_nand");
-        return "d_nand";
-    }
-    if (strcmp(upper, "NOR") == 0) {
-        snprintf(mapped_type, mapped_size, "d_nor");
-        return "d_nor";
-    }
-    if (strcmp(upper, "XOR") == 0) {
-        snprintf(mapped_type, mapped_size, "d_xor");
-        return "d_xor";
-    }
-    if (strcmp(upper, "XNOR") == 0) {
-        snprintf(mapped_type, mapped_size, "d_xnor");
-        return "d_xnor";
-    }
-    if (strcmp(upper, "DFF") == 0 || strcmp(upper, "D_FF") == 0 || strcmp(upper, "DFLOP") == 0) {
-        snprintf(mapped_type, mapped_size, "d_dff");
-        return "d_dff";
-    }
-    if (strcmp(upper, "JKFF") == 0 || strcmp(upper, "JK_FF") == 0) {
-        snprintf(mapped_type, mapped_size, "d_jkff");
-        return "d_jkff";
-    }
-    if (strcmp(upper, "SRFF") == 0 || strcmp(upper, "SR_FF") == 0 || strcmp(upper, "SRFLOP") == 0) {
-        snprintf(mapped_type, mapped_size, "d_srff");
-        return "d_srff";
-    }
-    if (strcmp(upper, "DLATCH") == 0 || strcmp(upper, "D_LATCH") == 0) {
-        snprintf(mapped_type, mapped_size, "d_dlatch");
-        return "d_dlatch";
-    }
-    if (strcmp(upper, "SRLATCH") == 0 || strcmp(upper, "SR_LATCH") == 0) {
-        snprintf(mapped_type, mapped_size, "d_srlatch");
-        return "d_srlatch";
-    }
-    if (strcmp(upper, "TFF") == 0 || strcmp(upper, "T_FF") == 0) {
-        snprintf(mapped_type, mapped_size, "d_tff");
-        return "d_tff";
-    }
-    if (strcmp(upper, "PHASEDET") == 0 || strcmp(upper, "PHIDET") == 0) {
-        snprintf(mapped_type, mapped_size, "d_phasedet");
-        return "d_phasedet";
-    }
-    if (strcmp(upper, "MODULATOR") == 0) {
-        snprintf(mapped_type, mapped_size, "a_modulator");
-        return "a_modulator";
-    }
-    if (strcmp(upper, "SAMPLEHOLD") == 0) {
-        snprintf(mapped_type, mapped_size, "a_samplehold");
-        return "a_samplehold";
-    }
-    if (strcmp(upper, "VARISTOR") == 0) {
-        snprintf(mapped_type, mapped_size, "a_varistor");
-        return "a_varistor";
-    }
-
-    /* Unknown device type - return as-is */
-    snprintf(mapped_type, mapped_size, "%s", devtype);
-    return devtype;
-}
-
-/* Get the number of pins for a given LTspice A-device type */
 static int ltspice_device_pin_count(const char *devtype)
 {
-    const char *upper = devtype;
     char buf[64];
     int i;
-
     for (i = 0; i < (int)strlen(devtype) && i < 63; i++)
         buf[i] = toupper_c(devtype[i]);
     buf[i] = '\0';
-    upper = buf;
+    const char *upper = buf;
 
-    if (strcmp(upper, "COUNTER") == 0) return 4;   /* in, out, reset, enable */
-    if (strcmp(upper, "SCHMITT") == 0 || strcmp(upper, "SCHMITT_BUF") == 0) return 2;  /* in, out */
-    if (strcmp(upper, "BUF") == 0 || strcmp(upper, "BUFFER") == 0) return 2;  /* in, out */
-    if (strcmp(upper, "NOT") == 0 || strcmp(upper, "INV") == 0 || strcmp(upper, "INVERTER") == 0) return 2;  /* in, out */
-    if (strcmp(upper, "AND") == 0) return 3;   /* in1, in2, out */
-    if (strcmp(upper, "OR") == 0) return 3;    /* in1, in2, out */
-    if (strcmp(upper, "NAND") == 0) return 3;  /* in1, in2, out */
-    if (strcmp(upper, "NOR") == 0) return 3;   /* in1, in2, out */
-    if (strcmp(upper, "XOR") == 0) return 3;   /* in1, in2, out */
-    if (strcmp(upper, "XNOR") == 0) return 3;  /* in1, in2, out */
-    if (strcmp(upper, "DFF") == 0 || strcmp(upper, "D_FF") == 0 || strcmp(upper, "DFLOP") == 0) return 4;   /* d, clk, q, nq */
-    if (strcmp(upper, "JKFF") == 0 || strcmp(upper, "JK_FF") == 0) return 4; /* j, k, clk, q */
-    if (strcmp(upper, "SRFF") == 0 || strcmp(upper, "SR_FF") == 0 || strcmp(upper, "SRFLOP") == 0) return 4; /* s, r, q, nq */
-    if (strcmp(upper, "DLATCH") == 0 || strcmp(upper, "D_LATCH") == 0) return 3; /* d, en, q */
-    if (strcmp(upper, "SRLATCH") == 0 || strcmp(upper, "SR_LATCH") == 0) return 3; /* s, r, q */
-    if (strcmp(upper, "TFF") == 0 || strcmp(upper, "T_FF") == 0) return 3; /* t, clk, q */
-    if (strcmp(upper, "PHASEDET") == 0 || strcmp(upper, "PHIDET") == 0) return 4; /* A, B, Q, NQ */
-    if (strcmp(upper, "TRISTATE") == 0) return 3; /* in, en, out */
-    if (strcmp(upper, "RAM") == 0) return 5; /* addr, data_in, clk, we, data_out */
-    if (strcmp(upper, "MODULATOR") == 0) return 4; /* fm, am, cos, sin */
-    if (strcmp(upper, "SAMPLEHOLD") == 0) return 3; /* in, clk, out */
-    if (strcmp(upper, "VARISTOR") == 0) return 4; /* in+, in-, out+, out- */
+    if (strcmp(upper, "COUNTER") == 0) return 4;
+    if (strcmp(upper, "SCHMITT") == 0 || strcmp(upper, "SCHMITT_BUF") == 0) return 2;
+    if (strcmp(upper, "BUF") == 0 || strcmp(upper, "BUFFER") == 0) return 2;
+    if (strcmp(upper, "NOT") == 0 || strcmp(upper, "INV") == 0 || strcmp(upper, "INVERTER") == 0) return 2;
+    if (strcmp(upper, "AND") == 0) return 3;
+    if (strcmp(upper, "OR") == 0) return 3;
+    if (strcmp(upper, "NAND") == 0) return 3;
+    if (strcmp(upper, "NOR") == 0) return 3;
+    if (strcmp(upper, "XOR") == 0) return 3;
+    if (strcmp(upper, "XNOR") == 0) return 3;
+    if (strcmp(upper, "DFF") == 0 || strcmp(upper, "D_FF") == 0 || strcmp(upper, "DFLOP") == 0) return 4;
+    if (strcmp(upper, "JKFF") == 0 || strcmp(upper, "JK_FF") == 0) return 4;
+    if (strcmp(upper, "SRFF") == 0 || strcmp(upper, "SR_FF") == 0 || strcmp(upper, "SRFLOP") == 0) return 4;
+    if (strcmp(upper, "DLATCH") == 0 || strcmp(upper, "D_LATCH") == 0) return 3;
+    if (strcmp(upper, "SRLATCH") == 0 || strcmp(upper, "SR_LATCH") == 0) return 3;
+    if (strcmp(upper, "TFF") == 0 || strcmp(upper, "T_FF") == 0) return 3;
+    if (strcmp(upper, "MODULATOR") == 0) return 4;
+    if (strcmp(upper, "SAMPLEHOLD") == 0) return 3;
+    if (strcmp(upper, "VARISTOR") == 0) return 4;
+    if (strcmp(upper, "PHASEDET") == 0 || strcmp(upper, "PHIDET") == 0) return 4;
+    if (strcmp(upper, "TRISTATE") == 0) return 3;
 
-    return 0; /* Unknown - no transformation */
+    return 0;
 }
 
-/* Get the LTspice pin index (0-based) for a given ngspice port index.
- * LTspice uses fixed 8-pin positions:
- *   Pins 0-4: Inputs (5 slots)
- *   Pin 5:    Reserved/unused
- *   Pins 6-7: Outputs (2 slots)
- * For simple 2-pin devices like BUF/NOT:
- *   ngspice port 0 (input)  -> LTspice pin 0
- *   ngspice port 1 (output) -> LTspice pin 6
- * For 3-pin devices like AND/OR: pins 0,1,6 (in1, in2, out)
- * For 4-pin devices: pins 0,1,6,7
- */
 static int ltspice_pin_index(const char *devtype, int ngspice_port)
 {
-    const char *upper = devtype;
     char buf[64];
     int i;
-    int pin_count = ltspice_device_pin_count(devtype);
-
     for (i = 0; i < (int)strlen(devtype) && i < 63; i++)
         buf[i] = toupper_c(devtype[i]);
     buf[i] = '\0';
-    upper = buf;
+    const char *upper = buf;
+
+    /* SRFLOP uses LTspice pins 2(S)/3(R)/6(Q)/7(/Q), not 0/1/6/7 */
+    bool is_srflop = (strcmp(upper, "SRFLOP") == 0 ||
+                      strcmp(upper, "SRFF") == 0 ||
+                      strcmp(upper, "SR_FF") == 0);
+
+    if (is_srflop) {
+        /* d_srlatch ports: S(0), R(1), enable(2), aset(3), areset(4), Q(5), /Q(6)
+         * LTspice SRFLOP: S on pin 0 (A), R on pin 1 (B), Q on pin 6, /Q on pin 7.
+         * Remaining LTspice pins 2-5 are unused in SRFLOP (tie to GND). */
+        if (ngspice_port == 0) return 0;  /* S → LTspice pin 0 (A) */
+        if (ngspice_port == 1) return 1;  /* R → LTspice pin 1 (B) */
+        if (ngspice_port == 2) return -1; /* enable → unused (B-source injected) */
+        if (ngspice_port == 3) return -1; /* aset → unused */
+        if (ngspice_port == 4) return -1; /* areset → unused */
+        if (ngspice_port == 5) return 6;  /* Q → LTspice pin 6 */
+        if (ngspice_port == 6) return 7;  /* /Q → LTspice pin 7 */
+        return -1;
+    }
+
+    int pin_count = ltspice_device_pin_count(devtype);
 
     if (pin_count == 2) {
-        /* 2-pin: input=pin0, output=pin6 */
         if (ngspice_port == 0) return 0;
         if (ngspice_port == 1) return 6;
     } else if (pin_count == 3) {
-        /* 3-pin: in1=pin0, in2=pin1, out=pin6 */
         if (ngspice_port == 0) return 0;
         if (ngspice_port == 1) return 1;
         if (ngspice_port == 2) return 6;
     } else if (pin_count == 4) {
-        /* 4-pin: p0=pin0, p1=pin1, p2=pin6, p3=pin7 */
         if (ngspice_port < 2) return ngspice_port;
         if (ngspice_port == 2) return 6;
         if (ngspice_port == 3) return 7;
     }
 
-    return ngspice_port; /* Fallback: direct mapping */
+    return ngspice_port;
 }
 
 /* ---- LTspice inline parameter parsing ---- */
 
 typedef struct {
-    bool present;   /* true if any bridge-relevant param was found */
+    bool present;
     double vhigh, vlow, trise, tfall, ref, vt, td;
     double cycles;
     double mark, space;
     double vref, roff, rclamp;
+    double vh;
     bool has_vhigh, has_vlow, has_trise, has_tfall, has_ref, has_vt, has_td;
     bool has_cycles;
     bool has_mark, has_space;
     bool has_vref, has_roff, has_rclamp;
+    bool has_vh;
 } LtspiceInlineParams;
 
-/* Parse a number with optional engineering suffix or trailing unit tag.
- * Engineering scale suffixes (lowercase, case-sensitive by convention):
- *   T=1e12, G=1e9, MEG=1e6, k=1e3, m=1e-3, u=1e-6, n=1e-9, p=1e-12, f=1e-15.
- * Trailing unit tags (V, A, W, Hz, F, H, Ohm, S) are silently stripped AFTER
- * the scale suffix has been applied.  If no scale suffix is found, a trailing
- * unit tag is stripped (e.g. "5V" -> 5.0, "10f" -> 10e-15, "100m" -> 0.1). */
 static bool parse_eng_number(const char *str, double *result)
 {
     char *end;
@@ -3567,7 +4248,6 @@ static bool parse_eng_number(const char *str, double *result)
     if (end == str) return false;
     if (*end == '\0') return true;
 
-    /* --- First: check for engineering scale suffix --- */
     int consumed = 0;
     double scale = 1.0;
 
@@ -3576,7 +4256,6 @@ static bool parse_eng_number(const char *str, double *result)
     case 'G': case 'g': scale = 1e9; consumed = 1; break;
     case 'K': case 'k': scale = 1e3; consumed = 1; break;
     case 'M': case 'm':
-        /* MEG/meg = mega, otherwise milli */
         if ((end[1] == 'E' || end[1] == 'e') &&
             (end[2] == 'G' || end[2] == 'g')) {
             scale = 1e6; consumed = 3;
@@ -3596,7 +4275,6 @@ static bool parse_eng_number(const char *str, double *result)
         end += consumed;
     }
 
-    /* --- Second: strip trailing unit tag (V, A, W, Hz, F, H, Ohm, S) --- */
     if (*end != '\0') {
         char c = *end;
         if (c == 'V' || c == 'v' || c == 'A' || c == 'a' ||
@@ -3606,9 +4284,6 @@ static bool parse_eng_number(const char *str, double *result)
             end++;
             if (toupper_c(*end) == 'Z') end++;
         } else if (c == 'F' || c == 'f') {
-            /* Only strip 'F' as unit if no scale was consumed above
-             * (otherwise "10f" = femto, "10F" = femto, but
-             *  value trailing bare "F" means Farad = as-is) */
             if (consumed == 0) end++;
         } else if (c == 'O') {
             end++;
@@ -3616,15 +4291,36 @@ static bool parse_eng_number(const char *str, double *result)
         } else if (c == 'S' || c == 's') {
             end++;
         }
-        /* Ignore remaining */
     }
 
     return true;
 }
 
-/* Parse key=value pairs from the inline parameter string.
- * String is the remainder after devtype extraction, e.g.:
- * "Vhigh=5V Vlow=0V Trise=10n Tfall=20n Ref=2.5V" */
+static char *ltspice_map_a_model(const char *upper)
+{
+    if (strcmp(upper, "AND") == 0) return "d_and";
+    if (strcmp(upper, "OR") == 0) return "d_or";
+    if (strcmp(upper, "NAND") == 0) return "d_nand";
+    if (strcmp(upper, "NOR") == 0) return "d_nor";
+    if (strcmp(upper, "XOR") == 0) return "d_xor";
+    if (strcmp(upper, "XNOR") == 0) return "d_xnor";
+    if (strcmp(upper, "SRFLOP") == 0) return "d_srlatch";
+    if (strcmp(upper, "SCHMITT") == 0 || strcmp(upper, "SCHMITT_BUF") == 0) return "adc_bridge";
+    if (strcmp(upper, "BUF") == 0 || strcmp(upper, "BUFFER") == 0) return "d_buffer";
+    if (strcmp(upper, "NOT") == 0 || strcmp(upper, "INV") == 0 || strcmp(upper, "INVERTER") == 0) return "d_inverter";
+    if (strcmp(upper, "DFF") == 0 || strcmp(upper, "D_FF") == 0 || strcmp(upper, "DFLOP") == 0) return "d_dff";
+    if (strcmp(upper, "JKFF") == 0 || strcmp(upper, "JK_FF") == 0) return "d_jkff";
+    if (strcmp(upper, "SRFF") == 0 || strcmp(upper, "SR_FF") == 0) return "d_srff";
+    if (strcmp(upper, "DLATCH") == 0 || strcmp(upper, "D_LATCH") == 0) return "d_dlatch";
+    if (strcmp(upper, "SRLATCH") == 0 || strcmp(upper, "SR_LATCH") == 0) return "d_srlatch";
+    if (strcmp(upper, "TFF") == 0 || strcmp(upper, "T_FF") == 0) return "d_tff";
+    if (strcmp(upper, "COUNTER") == 0) return "d_fdiv";
+    if (strcmp(upper, "MODULATOR") == 0) return "a_modulator";
+    if (strcmp(upper, "SAMPLEHOLD") == 0) return "a_samplehold";
+    if (strcmp(upper, "VARISTOR") == 0) return "a_varistor";
+    return NULL;
+}
+
 static LtspiceInlineParams ltspice_parse_inline_params(const char *s)
 {
     LtspiceInlineParams p = {0};
@@ -3632,13 +4328,13 @@ static LtspiceInlineParams ltspice_parse_inline_params(const char *s)
     char *ptr = tmp;
     char *tok;
 
-    /* Defaults (used if the corresponding param is absent) */
     p.vhigh = 5.0;
     p.vlow = 0.0;
     p.trise = 1e-9;
     p.tfall = 1e-9;
     p.ref = 2.5;
     p.vt = 2.5;
+    p.vh = 0.001;
     p.td = 0.0;
 
     while ((tok = gettok(&ptr)) != NULL) {
@@ -3650,38 +4346,39 @@ static LtspiceInlineParams ltspice_parse_inline_params(const char *s)
         double num = 0.0;
         bool valid = parse_eng_number(val, &num);
 
-        /* Case-insensitive key matching */
-        char keyup[64], *kd = keyup;
+        char keyup[64];
         int ki;
         for (ki = 0; ki < (int)sizeof(keyup)-1 && key[ki]; ki++)
-            kd[ki] = toupper_c(key[ki]);
-        kd[ki] = '\0';
+            keyup[ki] = toupper_c(key[ki]);
+        keyup[ki] = '\0';
 
-        if (strcmp(kd, "VHIGH") == 0 && valid) {
+        if (strcmp(keyup, "VHIGH") == 0 && valid) {
             p.vhigh = num; p.has_vhigh = true; p.present = true;
-        } else if (strcmp(kd, "VLOW") == 0 && valid) {
+        } else if (strcmp(keyup, "VLOW") == 0 && valid) {
             p.vlow = num; p.has_vlow = true; p.present = true;
-        } else if (strcmp(kd, "TRISE") == 0 && valid) {
+        } else if (strcmp(keyup, "TRISE") == 0 && valid) {
             p.trise = num; p.has_trise = true; p.present = true;
-        } else if (strcmp(kd, "TFALL") == 0 && valid) {
+        } else if (strcmp(keyup, "TFALL") == 0 && valid) {
             p.tfall = num; p.has_tfall = true; p.present = true;
-        } else if (strcmp(kd, "REF") == 0 && valid) {
+        } else if (strcmp(keyup, "REF") == 0 && valid) {
             p.ref = num; p.has_ref = true; p.present = true;
-        } else if (strcmp(kd, "VT") == 0 && valid) {
+        } else if (strcmp(keyup, "VT") == 0 && valid) {
             p.vt = num; p.has_vt = true; p.present = true;
-        } else if (strcmp(kd, "TD") == 0 && valid) {
+        } else if (strcmp(keyup, "VH") == 0 && valid) {
+            p.vh = num; p.has_vh = true;
+        } else if (strcmp(keyup, "TD") == 0 && valid) {
             p.td = num; p.has_td = true; p.present = true;
-        } else if (strcmp(kd, "CYCLES") == 0 && valid) {
+        } else if (strcmp(keyup, "CYCLES") == 0 && valid) {
             p.cycles = num; p.has_cycles = true; p.present = true;
-        } else if (strcmp(kd, "MARK") == 0 && valid) {
+        } else if (strcmp(keyup, "MARK") == 0 && valid) {
             p.mark = num; p.has_mark = true;
-        } else if (strcmp(kd, "SPACE") == 0 && valid) {
+        } else if (strcmp(keyup, "SPACE") == 0 && valid) {
             p.space = num; p.has_space = true;
-        } else if (strcmp(kd, "VREF") == 0 && valid) {
+        } else if (strcmp(keyup, "VREF") == 0 && valid) {
             p.vref = num; p.has_vref = true;
-        } else if (strcmp(kd, "ROFF") == 0 && valid) {
+        } else if (strcmp(keyup, "ROFF") == 0 && valid) {
             p.roff = num; p.has_roff = true;
-        } else if (strcmp(kd, "RCLAMP") == 0 && valid) {
+        } else if (strcmp(keyup, "RCLAMP") == 0 && valid) {
             p.rclamp = num; p.has_rclamp = true;
         }
         tfree(tok);
@@ -3690,51 +4387,50 @@ static LtspiceInlineParams ltspice_parse_inline_params(const char *s)
     return p;
 }
 
-/* Check if an LTspice pin index is an input pin.
- * LTspice mapping: pins 0-4 = inputs, pin 5 = reserved, pins 6-7 = outputs. */
 static bool ltspice_pin_is_input(int lt_pin)
 {
     return lt_pin >= 0 && lt_pin <= 4;
 }
 
-/* Check if an LTspice pin index is an output pin.
- * LTspice 8-pin fixed format:
- *   Pins 0-4: Inputs
- *   Pin 5:    Output (first/primary) for simple gates and DFF Q
- *   Pin 6:    Output (secondary) for DFF !Q, or VCC+ for some devices
- *   Pin 7:    Output (tertiary) or VCC-/GND for some devices */
 static bool ltspice_pin_is_output(int lt_pin)
 {
     return lt_pin == 5 || lt_pin == 6 || lt_pin == 7;
 }
 
-void ltspice_a_device_transform(struct card *oldcard)
+/* In LTspice subcircuits, unused A-device pins are tied to a numeric GND
+ * reference ("0" for global GND, or the subcircuit's GND pin like "1").
+ * Heuristic: purely numeric nodes are treated as GND (inactive). */
+static bool is_gnd_node(const char *node)
 {
-    struct card *card;
-    struct vsmodels *modelsfound = NULL;
+    if (!node) return true;
+    if (strcmp(node, "0") == 0) return true;
+    for (const char *p = node; *p; p++)
+        if (!isdigit_c(*p)) return false;
+    return true;
+}
+
+/* ---- LTspice A-device transform ---- */
+
+/* do not modify oldcard address, insert everything after first line only */
+void ltspice_compat_a(struct card *oldcard)
+{
+    struct card *card, *prev_card = NULL;
     int skip_control = 0;
 
-    /* First pass: find all A-device model types used and register them */
+    /* First pass: register model cards */
+    struct vsmodels *modelsfound = NULL;
     for (card = oldcard; card; card = card->nextcard) {
-        char *cut_line = card->line;
-        if (*cut_line == '*' || *cut_line == '\0')
-            continue;
-        if (ciprefix(".control", cut_line)) {
-            skip_control++;
-            continue;
-        }
-        else if (ciprefix(".endc", cut_line)) {
-            skip_control--;
-            continue;
-        }
-        else if (skip_control > 0)
-            continue;
-
-        if (ciprefix(".model", cut_line)) {
-            /* Register existing model - parse type and params */
-            char *tmp = copy(cut_line);
+        char *cl = card->line;
+        if (!cl) continue;
+        while (*cl == ' ' || *cl == '\t') cl++;
+        if (*cl == '*' || *cl == '\0') continue;
+        if (ciprefix(".control", cl)) { skip_control++; continue; }
+        if (ciprefix(".endc", cl)) { skip_control--; continue; }
+        if (skip_control > 0) continue;
+        if (ciprefix(".model", cl)) {
+            char *tmp = copy(cl);
             char *str = tmp;
-            str = nexttok(str); /* skip .model */
+            str = nexttok(str);
             char *modname = gettok(&str);
             if (modname) {
                 char *modeltype_full = gettok(&str);
@@ -3750,159 +4446,329 @@ void ltspice_a_device_transform(struct card *oldcard)
                         params = copy(p);
                     } else {
                         type = copy(modeltype_full);
+                        /* For space-separated format .model NAME type param=val ...
+                         * the remaining tokens in str are the params. Read them all. */
+                        char *rest = str;
+                        while (*rest == ' ' || *rest == '\t') rest++;
+                        if (*rest) {
+                            char *end = rest + strlen(rest) - 1;
+                            while (end > rest && (*end == ' ' || *end == '\t')) end--;
+                            *(end + 1) = '\0';
+                            params = copy(rest);
+                        }
                     }
-                    modelsfound = insert_new_model(
-                        modelsfound, modname, type, params, "top");
-                    /* Find the newly inserted node to set cardptr */
-                    {
-                        struct vsmodels *p = modelsfound;
-                        while (p && p->nextmodel) p = p->nextmodel;
-                        if (p) p->cardptr = card;
+                    struct vsmodels *m = insert_new_model(modelsfound, modname, type, params, "top");
+                    while (m && m->nextmodel) m = m->nextmodel;
+                    if (m) m->cardptr = card;
+                    /* Transform LTspice-specific D model params
+                     *   Ron=value → RS=value   (series resistance)
+                     *   Vrev=value → BV=value  (reverse breakdown voltage)
+                     *   Roff=value → stripped  (off resistance, no ngspice equivalent)
+                     *   Vfwd=value → stripped  (forward voltage drop, no ngspice equivalent)
+                     *   Epsilon=value → stripped */
+                    if (strcasecmp(type, "D") == 0 && params) {
+                        double ron = 0, bv = 0;
+                        bool needs_fix = false;
+                        bool keep_other = true;
+                        char parbuf[256];
+                        snprintf(parbuf, sizeof(parbuf), "%s", params);
+                        char *p = parbuf;
+                        while (*p) {
+                            while (*p == ' ' || *p == '\t' || *p == ',') p++;
+                            if (strncasecmp(p, "Ron=", 4) == 0) {
+                                p += 4;
+                                if (!parse_eng_number(p, &ron)) ron = 0;
+                                needs_fix = true;
+                                while (*p && *p != ' ' && *p != '\t' && *p != ',') p++;
+                            } else if (strncasecmp(p, "Vrev=", 5) == 0) {
+                                p += 5;
+                                if (!parse_eng_number(p, &bv)) bv = 0;
+                                needs_fix = true;
+                                while (*p && *p != ' ' && *p != '\t' && *p != ',') p++;
+                            } else if (strncasecmp(p, "Roff=", 5) == 0 ||
+                                       strncasecmp(p, "Vfwd=", 5) == 0 ||
+                                       strncasecmp(p, "Epsilon=", 8) == 0 ||
+                                       strncasecmp(p, "revEpsilon=", 11) == 0) {
+                                needs_fix = true;
+                                while (*p && *p != ' ' && *p != '\t' && *p != ',') p++;
+                            } else p++;
+                        }
+                        if (needs_fix) {
+                            char new_params[256] = "";
+                            if (ron > 0)
+                                snprintf(new_params + strlen(new_params), sizeof(new_params) - strlen(new_params),
+                                         "RS=%.15g ", ron);
+                            if (bv > 0)
+                                snprintf(new_params + strlen(new_params), sizeof(new_params) - strlen(new_params),
+                                         "BV=%.15g ", bv);
+                            /* Trim trailing space */
+                            size_t nl = strlen(new_params);
+                            if (nl > 0 && new_params[nl-1] == ' ') new_params[nl-1] = '\0';
+                            char new_model[512];
+                            if (new_params[0])
+                                snprintf(new_model, sizeof(new_model), ".model %s D(%s)", modname, new_params);
+                            else
+                                snprintf(new_model, sizeof(new_model), ".model %s D()", modname);
+                            tfree(card->line);
+                            card->line = copy(new_model);
+                        }
                     }
-                    tfree(type);
-                    tfree(params);
-                    tfree(modeltype_full);
+                    /* Transform SW model Vh parameter: ngspice uses Vt±Vh,
+                     * LTspice uses Vt±Vh/2.  Divide Vh by 2 for compatibility. */
+                    if (strcasecmp(type, "SW") == 0 && params) {
+                        double vh_val = 0;
+                        bool has_vh = false;
+                        char parbuf[512];
+                        snprintf(parbuf, sizeof(parbuf), "%s", params);
+                        char *scan = parbuf;
+                        while (*scan) {
+                            while (*scan == ' ' || *scan == '\t' || *scan == ',') scan++;
+                            if (strncasecmp(scan, "Vh=", 3) == 0 ||
+                                strncasecmp(scan, "VH=", 3) == 0) {
+                                scan += 3;
+                                if (parse_eng_number(scan, &vh_val)) {
+                                    has_vh = true;
+                                }
+                                break;
+                            }
+                            while (*scan && *scan != ' ' && *scan != '\t' && *scan != ',') scan++;
+                        }
+                        if (has_vh) {
+                            vh_val /= 2.0;
+                            /* Rebuild the model line checking each param */
+                            char new_params[512] = "";
+                            scan = parbuf;
+                            while (*scan) {
+                                while (*scan == ' ' || *scan == '\t' || *scan == ',') {
+                                    scan++;
+                                }
+                                if (!*scan) break;
+                                const char *start = scan;
+                                while (*scan && *scan != ' ' && *scan != '\t' && *scan != ',')
+                                    scan++;
+                                size_t len = (size_t)(scan - start);
+                                if (len > 0) {
+                                    char pname[128];
+                                    size_t ncopy = len < sizeof(pname)-1 ? len : sizeof(pname)-1;
+                                    memcpy(pname, start, ncopy);
+                                    pname[ncopy] = '\0';
+                                    /* Replace Vh with new value */
+                                    if (strncasecmp(pname, "Vh=", 3) == 0) {
+                                        if (new_params[0]) strcat(new_params, " ");
+                                        char valbuf[64];
+                                        snprintf(valbuf, sizeof(valbuf), "%.15g", vh_val);
+                                        strcat(new_params, "Vh=");
+                                        strcat(new_params, valbuf);
+                                    } else {
+                                        if (new_params[0]) strcat(new_params, " ");
+                                        strncat(new_params, pname, sizeof(new_params)-strlen(new_params)-1);
+                                    }
+                                }
+                            }
+                            char new_model[1024];
+                            snprintf(new_model, sizeof(new_model),
+                                     ".model %s SW(%s)", modname, new_params);
+                            tfree(card->line);
+                            card->line = copy(new_model);
+                        }
+                    }
+                    /* VSWITCH→SW model card transform */
+                    if (strcasecmp(type, "VSWITCH") == 0 && params) {
+                        double ron_val = 1.0, roff_val = 1.0e9;
+                        double von_val = 1.0, voff_val = 0.0;
+                        double vt_val = 0.0, vh_val = 0.001;
+                        bool has_vt_vh = false, has_von_voff = false;
+                        char parbuf[512];
+
+                        snprintf(parbuf, sizeof(parbuf), "%s", params);
+
+                        {
+                            char *sp = parbuf;
+                            while (*sp) {
+                                while (*sp == ' ' || *sp == '\t' || *sp == ',') sp++;
+                                if (strncasecmp(sp, "Ron=", 4) == 0) {
+                                    sp += 4;
+                                    parse_eng_number(sp, &ron_val);
+                                    while (*sp && *sp != ' ' && *sp != '\t' && *sp != ',') sp++;
+                                } else if (strncasecmp(sp, "Roff=", 5) == 0) {
+                                    sp += 5;
+                                    parse_eng_number(sp, &roff_val);
+                                    while (*sp && *sp != ' ' && *sp != '\t' && *sp != ',') sp++;
+                                } else if (strncasecmp(sp, "Vt=", 3) == 0) {
+                                    sp += 3;
+                                    parse_eng_number(sp, &vt_val);
+                                    has_vt_vh = true;
+                                    while (*sp && *sp != ' ' && *sp != '\t' && *sp != ',') sp++;
+                                } else if (strncasecmp(sp, "Vh=", 3) == 0) {
+                                    sp += 3;
+                                    parse_eng_number(sp, &vh_val);
+                                    has_vt_vh = true;
+                                    while (*sp && *sp != ' ' && *sp != '\t' && *sp != ',') sp++;
+                                } else if (strncasecmp(sp, "Von=", 4) == 0) {
+                                    sp += 4;
+                                    parse_eng_number(sp, &von_val);
+                                    has_von_voff = true;
+                                    while (*sp && *sp != ' ' && *sp != '\t' && *sp != ',') sp++;
+                                } else if (strncasecmp(sp, "Voff=", 5) == 0) {
+                                    sp += 5;
+                                    parse_eng_number(sp, &voff_val);
+                                    has_von_voff = true;
+                                    while (*sp && *sp != ' ' && *sp != '\t' && *sp != ',') sp++;
+                                } else {
+                                    sp++;
+                                }
+                            }
+                        }
+
+                        if (has_von_voff) {
+                            vt_val = (von_val + voff_val) / 2.0;
+                            vh_val = (von_val > voff_val) ? (von_val - voff_val) : (voff_val - von_val);
+                            if (vh_val < 1e-12) vh_val = 1e-6;
+                        } else if (!has_vt_vh) {
+                            vt_val = 0.0;
+                            vh_val = 0.001;
+                        }
+
+                        {
+                            char new_model[512];
+                            snprintf(new_model, sizeof(new_model),
+                                     ".model %s SW (RON=%.15g ROFF=%.15g VT=%.15g VH=%.15g)",
+                                     modname, ron_val, roff_val, vt_val, vh_val);
+                            tfree(card->line);
+                            card->line = copy(new_model);
+                    }
+                    tfree(type); tfree(params);
                 }
-                tfree(modname);
+                tfree(modeltype_full);
             }
+            tfree(modname);
             tfree(tmp);
         }
     }
+    }
 
-    /* Second pass: transform A-device lines */
+    /* Second pass: transform A-devices */
     skip_control = 0;
-    for (card = oldcard; card; card = card->nextcard) {
-        char *cut_line = card->line;
-        if (*cut_line == '*' || *cut_line == '\0')
-            continue;
-        if (ciprefix(".control", cut_line)) {
-            skip_control++;
-            continue;
-        }
-        else if (ciprefix(".endc", cut_line)) {
-            skip_control--;
-            continue;
-        }
-        else if (skip_control > 0)
-            continue;
+    for (card = oldcard; card; ) {
+        char *cl = card->line;
+        if (!cl) { prev_card = card; card = card->nextcard; continue; }
+        char *cut_line = cl;
+        while (*cut_line == ' ' || *cut_line == '\t') cut_line++;
+        if (*cut_line == '*' || *cut_line == '\0') { prev_card = card; card = card->nextcard; continue; }
+        if (ciprefix(".control", cut_line)) { skip_control++; prev_card = card; card = card->nextcard; continue; }
+        if (ciprefix(".endc", cut_line)) { skip_control--; prev_card = card; card = card->nextcard; continue; }
+        if (skip_control > 0) { prev_card = card; card = card->nextcard; continue; }
 
-        /* Check if this is an A-device line */
-        if (*cut_line == 'a' || *cut_line == 'A') {
-            /* Parse the line */
+        if ((*cut_line == 'a' || *cut_line == 'A') && !ciprefix(".model", cut_line)) {
             char *linecopy = copy(cut_line);
             char *s = linecopy;
-
-            /* Get instance name */
             char *instname = gettok_node(&s);
-            if (!instname) { tfree(linecopy); continue; }
+            if (!instname) { tfree(linecopy); prev_card = card; card = card->nextcard; continue; }
 
-            /* Get pins and device type — read all remaining tokens, then
-             * find the devtype as the last token without '='.
-             * Params always contain '='; pins and devtype never do.
-             * This handles A-devices with fewer than 8 LTspice pins
-             * (e.g. VARISTOR with 4 pins). */
-            char *pins[8] = {NULL};
-            int i;
-            char *devtype = NULL;
+            char *pins[8] = {NULL}, *devtype = NULL;
+            char *toks[16] = {NULL}; int nt = 0;
             char param_buf[1024] = "";
-            {
-                char *all_toks[16] = {NULL};
-                int nt = 0;
-                int dev_idx = -1;
-                char *tok;
-                while ((tok = gettok_node(&s)) != NULL && nt < 16) {
-                    all_toks[nt++] = tok;
+            while ((toks[nt] = gettok_node(&s)) != NULL && nt < 16) nt++;
+            /* Find devtype (last token without '=') */
+            int dev_idx = -1;
+            for (int ti = nt - 1; ti >= 0; ti--) {
+                if (strchr(toks[ti], '=') == NULL) { devtype = toks[ti]; dev_idx = ti; break; }
+            }
+            if (!devtype) {
+                for (int fi = 0; fi < nt; fi++) tfree(toks[fi]);
+                tfree(instname); tfree(linecopy);
+                prev_card = card; card = card->nextcard; continue;
+            }
+            /* Extract pins and params */
+            for (int ti = 0; ti < dev_idx && ti < 8; ti++) pins[ti] = toks[ti];
+            for (int fi = dev_idx + 1; fi < nt; fi++) {
+                if (strlen(param_buf) + strlen(toks[fi]) + 2 < sizeof(param_buf)) {
+                    if (fi > dev_idx + 1) strcat(param_buf, " ");
+                    strcat(param_buf, toks[fi]);
                 }
-                for (int ti = nt - 1; ti >= 0; ti--) {
-                    if (strchr(all_toks[ti], '=') == NULL) {
-                        devtype = all_toks[ti];
-                        dev_idx = ti;
-                        break;
-                    }
-                }
-                if (!devtype) {
-                    tfree(instname);
-                    for (int fi = 0; fi < nt; fi++) tfree(all_toks[fi]);
-                    tfree(linecopy);
-                    continue;
-                }
-                int npins = dev_idx > 8 ? 8 : dev_idx;
-                for (i = 0; i < npins; i++) pins[i] = all_toks[i];
-                /* Build param string from tokens after devtype */
-                for (int fi = dev_idx + 1; fi < nt; fi++) {
-                    if (fi > dev_idx + 1 && strlen(param_buf) < sizeof(param_buf) - 2)
-                        strcat(param_buf, " ");
-                    if (strlen(param_buf) + strlen(all_toks[fi]) < sizeof(param_buf) - 1)
-                        strcat(param_buf, all_toks[fi]);
-                    tfree(all_toks[fi]);
-                }
+                tfree(toks[fi]);
             }
 
-            /* Map device type to ngspice equivalent */
-            char mapped_type[64];
             int pin_count = ltspice_device_pin_count(devtype);
+            /* Try uppercase if zero */
+            char dev_up[64]; int di;
+            for (di = 0; di < 63 && devtype[di]; di++) dev_up[di] = toupper_c(devtype[di]);
+            dev_up[di] = '\0';
+            if (pin_count == 0) {
+                pin_count = ltspice_device_pin_count(dev_up);
+            }
+            /* Check for model-card form */
             bool from_model_card = false;
             char *model_card_params = NULL;
             struct card *model_card_ptr = NULL;
-
             if (pin_count == 0) {
-                /* Check if devtype references a registered model card */
                 struct vsmodels *mdl = find_model_by_name(modelsfound, devtype, "top");
-                if (mdl && mdl->modeltype && strcmp(mdl->modeltype, "counter") == 0) {
-                    /* Model-card form COUNTER: .model MYMODEL counter(cycles=N) */
-                    model_card_params = mdl->params ? copy(mdl->params) : NULL;
-                    model_card_ptr = mdl->cardptr;
-                    tfree(devtype);
-                    devtype = copy("counter");
-                    pin_count = ltspice_device_pin_count(devtype);
-                    from_model_card = true;
+                if (!mdl) mdl = find_model_by_name(modelsfound, dev_up, "top");
+                if (mdl) {
+                    char *mtup = copy(mdl->modeltype);
+                    for (int mi = 0; mtup[mi]; mi++) mtup[mi] = toupper_c(mtup[mi]);
+                    if (strcmp(mtup, "COUNTER") == 0) {
+                        model_card_params = mdl->params ? copy(mdl->params) : NULL;
+                        model_card_ptr = mdl->cardptr;
+                        tfree(devtype);
+                        devtype = copy("COUNTER");
+                        pin_count = ltspice_device_pin_count(devtype);
+                        from_model_card = true;
+                    }
+                    tfree(mtup);
                 }
             }
-
             if (pin_count == 0) {
-                /* Not a recognized LTspice A-device — pass through unchanged */
-                tfree(instname);
-                for (i = 0; i < 8; i++) tfree(pins[i]);
-                tfree(devtype);
-                tfree(linecopy);
-                continue;
+                for (int fi = 0; fi < dev_idx; fi++) tfree(toks[fi]);
+                tfree(toks[dev_idx]); tfree(instname); tfree(linecopy);
+                prev_card = card; card = card->nextcard; continue;
             }
-            const char *ngspice_type = ltspice_devtype_to_ngspice(devtype, mapped_type, sizeof(mapped_type));
 
-            /* Inline parameter bridge setup (declared here for cleanup scope) */
-            struct card *insert_pos = card;
+            /* Uppercase devtype for lookup */
+            char *upper = copy(devtype);
+            for (int ui = 0; upper[ui]; ui++) upper[ui] = toupper_c(upper[ui]);
+            char *ng_type = ltspice_map_a_model(upper);
+
+            if (!ng_type) {
+                tfree(upper);
+                for (int fi = 0; fi < nt; fi++) tfree(toks[fi]);
+                tfree(instname); tfree(linecopy);
+                prev_card = card; card = card->nextcard; continue;
+            }
+
+            bool use_vector = (strcmp(upper, "AND") == 0 || strcmp(upper, "OR") == 0 ||
+                               strcmp(upper, "NAND") == 0 || strcmp(upper, "NOR") == 0 ||
+                               strcmp(upper, "XOR") == 0 || strcmp(upper, "XNOR") == 0);
+
+            /* Parse inline params and set up bridge flag */
             LtspiceInlineParams iparams = {0};
             bool do_bridge = false;
             char *bridge_node[8] = {NULL};
             char *analog_node[8] = {NULL};
-            int bridge_dir[8] = {0}; /* 0=none, 1=adc (input), 2=dac (output) */
+            int bridge_dir[8] = {0};
             int in_count = 0, out_count = 0;
 
-            {
-                char *pp = param_buf;
-                while (*pp == ' ' || *pp == '\t') pp++;
-                if (*pp != '\0') {
-                    iparams = ltspice_parse_inline_params(param_buf);
-                    do_bridge = iparams.present;
-                }
+            if (param_buf[0]) {
+                iparams = ltspice_parse_inline_params(param_buf);
+                do_bridge = iparams.present;
             }
 
-            /* Analog codemodels — no ADC/DAC bridges */
-            if (strcmp(ngspice_type, "a_modulator") == 0 ||
-                strcmp(ngspice_type, "a_samplehold") == 0 ||
-                strcmp(ngspice_type, "a_varistor") == 0) {
-                do_bridge = false;
-            }
+            /* Suppress bridges for analog codemodels.
+             * adc_bridge excluded: needs DAC bridge on output so
+             * digital signal drives analog node in subcircuits. */
+            bool is_analog = (strcmp(ng_type, "a_modulator") == 0 ||
+                              strcmp(ng_type, "a_samplehold") == 0 ||
+                              strcmp(ng_type, "a_varistor") == 0);
+            if (is_analog) do_bridge = false;
 
-            /* For model-card form COUNTER, extract cycles from model card params */
+            /* Model-card form COUNTER: suppress bridges, extract cycles */
             if (from_model_card && model_card_params) {
-                char pcopy[256];
-                int pc;
-                for (pc = 0; pc < 255 && model_card_params[pc]; pc++)
-                    pcopy[pc] = toupper_c(model_card_params[pc]);
-                pcopy[pc] = '\0';
-                char *eqs = strstr(pcopy, "CYCLES=");
-                if (!eqs) eqs = strstr(pcopy, "CYCLES =");
+                char pc[256]; int pci;
+                for (pci = 0; pci < 255 && model_card_params[pci]; pci++)
+                    pc[pci] = toupper_c(model_card_params[pci]);
+                pc[pci] = '\0';
+                char *eqs = strstr(pc, "CYCLES=");
+                if (!eqs) eqs = strstr(pc, "CYCLES =");
                 if (eqs) {
                     char *val = eqs;
                     while (*val && *val != '=') val++;
@@ -3919,11 +4785,13 @@ void ltspice_a_device_transform(struct card *oldcard)
                 }
             }
 
+            /* Build bridge nodes for digital gates that need them */
             if (do_bridge) {
-                int lt;
-                for (lt = 0; lt < 8; lt++) {
-                    if (!pins[lt] || strcmp(pins[lt], "0") == 0) continue;
-                    if (ltspice_pin_is_input(lt)) {
+                for (int lt = 0; lt < 8; lt++) {
+                    char *pv = pins[lt];
+                    if (!pv) continue;
+                    if (strcmp(pv, "0") == 0) continue;
+                    if (ltspice_pin_is_input(lt) && (lt < pin_count || use_vector)) {
                         char buf[64];
                         snprintf(buf, sizeof(buf), "_lt%s_in%d_d", instname, in_count);
                         bridge_node[lt] = copy(buf);
@@ -3941,417 +4809,416 @@ void ltspice_a_device_transform(struct card *oldcard)
                 }
             }
 
-            if (pin_count > 0 && pin_count < 8) {
-                /* Build new A-device line with only the pins the model needs */
-                char *new_line;
-                char node_str[512] = "";
-
-                /* XSPICE 2-input digital gates (AND, OR, NAND, NOR, XOR, XNOR) and
-                   3-pin DLATCH expect vectorized inputs. Wrap input pins in [...]
-                   brackets for native XSPICE compatibility.
-                   Flip-flops (DFF, JKFF, SRFF) and COUNTER use separate named ports. */
-                const char *upper = devtype;
-                char upper_buf[64];
-                int ui;
-                for (ui = 0; ui < (int)strlen(devtype) && ui < 63; ui++)
-                    upper_buf[ui] = toupper_c(devtype[ui]);
-                upper_buf[ui] = '\0';
-                upper = upper_buf;
-
-                int use_vector = (strcmp(upper, "AND") == 0 || strcmp(upper, "OR") == 0 ||
-                                  strcmp(upper, "NAND") == 0 || strcmp(upper, "NOR") == 0 ||
-                                  strcmp(upper, "XOR") == 0 || strcmp(upper, "XNOR") == 0);
-
-                /* For flip-flops and latches, ngspice expects more ports than the
-                   LTspice pin_count reports. Map them to full ngspice port lists. */
-                int ngspice_ports = pin_count;
-                if (strcmp(upper, "DLATCH") == 0 || strcmp(upper, "D_LATCH") == 0) {
-                    /* d_dlatch: data enable set reset out Nout (6 ports, last 4 optional) */
-                    ngspice_ports = 6;
-                } else if (strcmp(upper, "DFF") == 0 || strcmp(upper, "D_FF") == 0 || strcmp(upper, "DFLOP") == 0) {
-                    /* d_dff: data clk set reset out Nout (6 ports, last 4 optional) */
-                    ngspice_ports = 6;
-                } else if (strcmp(upper, "JKFF") == 0 || strcmp(upper, "JK_FF") == 0) {
-                    /* d_jkff: j k clk set reset out Nout — but LTspice only has 4 pins */
-                    /* Map: pin0=j, pin1=k, pin2=clk, pin3=q, pin6=nq */
-                    ngspice_ports = 7;
-                } else if (strcmp(upper, "SRFF") == 0 || strcmp(upper, "SR_FF") == 0 || strcmp(upper, "SRFLOP") == 0) {
-                    /* d_srff: s r clk set reset out Nout */
-                    ngspice_ports = 7;
-                } else if (strcmp(upper, "COUNTER") == 0) {
-                    /* d_fdiv: freq_in, freq_out (2 ports only) */
-                    ngspice_ports = 2;
-                } else if (strcmp(upper, "SRLATCH") == 0 || strcmp(upper, "SR_LATCH") == 0) {
-                    /* d_srlatch: s r enable set reset out Nout (7 ports) */
-                    ngspice_ports = 7;
-                } else if (strcmp(upper, "SAMPLEHOLD") == 0) {
-                    /* a_samplehold: in, clk, out (3 ports) */
-                    ngspice_ports = 3;
-                } else if (strcmp(upper, "VARISTOR") == 0) {
-                    /* a_varistor: 3 XSPICE ports (in+ in/v, in- in/v, out inout/gd).
-                     * gd port uses 2 netlist nodes, so total nodes needed = 1+1+2 = 4.
-                     * Map: port0=in+(pin0), port1=in-(pin1), port2=out+(pin2), port3=out-(pin3). */
-                    ngspice_ports = 4;
-                }
-
-                if (use_vector) {
-                    strcat(node_str, "[");
-                }
-
-                /* Collect pins — for vectorized gates, inputs go in [] and output after */
-                /* When do_bridge is active, build a port→bridge mapping from the actual
-                 * pin layout (scanning bridge_dir in order) instead of using hardcoded
-                 * ltspice_pin_index which assumes fixed output positions. */
-                char *port_bridge[8] = {NULL}; /* maps ngspice port index → bridge node */
-                int bridge_input_idx = 0, bridge_output_idx = 0;
-                bool bridge_map_done = false;
-                if (do_bridge && use_vector) {
-                    for (int lt = 0; lt < 8; lt++) {
-                        if (bridge_dir[lt] == 1 && bridge_input_idx < pin_count - 1) {
-                            port_bridge[bridge_input_idx] = bridge_node[lt];
-                            bridge_input_idx++;
-                        } else if (bridge_dir[lt] == 2 && bridge_output_idx < 2) {
-                            port_bridge[pin_count - 1 + bridge_output_idx] = bridge_node[lt];
-                            bridge_output_idx++;
-                        }
+            /* For adc_bridge (SCHMITT), Q is always on LTspice pin 6,
+             * /Q on LTspice pin 7, inputs on pins 0 and 1.
+             * Clear all bridges that don't match these fixed positions.
+             * This avoids the broken forward-scan heuristic on devices
+             * with many non-GND pins (e.g. NE555.sub's 8-pin SCHMITT). */
+            int adc_nq_pos = -1;
+            if (strcmp(ng_type, "adc_bridge") == 0) {
+                for (int lt = 0; lt < 8; lt++) {
+                    bool keep = false;
+                    if (bridge_dir[lt] == 1 && (lt == 0 || lt == 1)) {
+                        keep = true;  /* ADC on input pins 0,1 */
+                    } else if (bridge_dir[lt] == 2 && lt == 6) {
+                        keep = true;  /* DAC on Q output pin 6 only */
                     }
-                    bridge_map_done = true;
-                }
-                for (i = 0; i < ngspice_ports; i++) {
-                    int lt_pin;
-                    /* Map ngspice port index back to LTspice pin position */
-                    if (strcmp(upper, "DLATCH") == 0 || strcmp(upper, "D_LATCH") == 0) {
-                        /* LTspice: d=pin0, en=pin1, q=pin6, nq=pin7. ngspice: data,en,set,reset,out,Nout */
-                        if (i == 0) lt_pin = 0;       /* data */
-                        else if (i == 1) lt_pin = 1;   /* enable */
-                        else if (i == 2) lt_pin = -1;  /* set (not in LTspice) */
-                        else if (i == 3) lt_pin = -1;  /* reset (not in LTspice) */
-                        else if (i == 4) lt_pin = 6;   /* out (Q at pin 6) */
-                        else lt_pin = 7;                /* Nout (!Q at pin 7) */
-                    } else if (strcmp(upper, "DFF") == 0 || strcmp(upper, "D_FF") == 0 || strcmp(upper, "DFLOP") == 0) {
-                        /* LTspice: d=pin0, clk=pin1, q=pin6, nq=pin7. ngspice: data,clk,set,reset,out,Nout */
-                        if (i == 0) lt_pin = 0;       /* data */
-                        else if (i == 1) lt_pin = 1;   /* clk */
-                        else if (i == 2) lt_pin = -1;  /* set */
-                        else if (i == 3) lt_pin = -1;  /* reset */
-                        else if (i == 4) lt_pin = 6;   /* out (Q at pin 6) */
-                        else lt_pin = 7;                /* Nout (!Q at pin 7) */
-                    } else if (strcmp(upper, "JKFF") == 0 || strcmp(upper, "JK_FF") == 0) {
-                        /* LTspice: j=pin0, k=pin1, clk=pin2, q=pin6, nq=pin7. ngspice: j,k,clk,set,reset,out,Nout */
-                        if (i == 0) lt_pin = 0;       /* j */
-                        else if (i == 1) lt_pin = 1;   /* k */
-                        else if (i == 2) lt_pin = 2;   /* clk */
-                        else if (i == 3) lt_pin = -1;  /* set */
-                        else if (i == 4) lt_pin = -1;  /* reset */
-                        else if (i == 5) lt_pin = 6;   /* out (Q at pin 6) */
-                        else lt_pin = 7;                /* Nout (!Q at pin 7) */
-                    } else if (strcmp(upper, "SRFF") == 0 || strcmp(upper, "SR_FF") == 0 || strcmp(upper, "SRFLOP") == 0) {
-                        /* LTspice: s=pin0, r=pin1, q=pin6, nq=pin7 */
-                        if (i == 0) lt_pin = 0;       /* s */
-                        else if (i == 1) lt_pin = 1;   /* r */
-                        else if (i == 2) lt_pin = -1;  /* clk (not used by d_srff) */
-                        else if (i == 3) lt_pin = -1;  /* set */
-                        else if (i == 4) lt_pin = -1;  /* reset */
-                        else if (i == 5) lt_pin = 6;   /* out (Q at pin 6) */
-                        else lt_pin = 7;                /* Nout (!Q at pin 7) */
-                    } else if (strcmp(upper, "SRLATCH") == 0 || strcmp(upper, "SR_LATCH") == 0) {
-                        /* d_srlatch: s r enable set reset out Nout (7 ports) */
-                        /* LTspice: s=pin0, r=pin1, q=pin6, nq=pin7 */
-                        if (i == 0) lt_pin = 0;       /* s */
-                        else if (i == 1) lt_pin = 1;   /* r */
-                        else if (i == 2) lt_pin = -1;  /* enable (not in LTspice) */
-                        else if (i == 3) lt_pin = -1;  /* set (not in LTspice) */
-                        else if (i == 4) lt_pin = -1;  /* reset (not in LTspice) */
-                        else if (i == 5) lt_pin = 6;   /* out (Q at pin 6) */
-                        else lt_pin = 7;                /* Nout (!Q at pin 7) */
-                    } else if (strcmp(upper, "TFF") == 0 || strcmp(upper, "T_FF") == 0) {
-                        /* d_tff: t clk set reset out Nout (6 ports) */
-                        /* LTspice: t=pin0, clk=pin1, q=pin6, nq=pin7 */
-                        if (i == 0) lt_pin = 0;       /* t */
-                        else if (i == 1) lt_pin = 1;   /* clk */
-                        else if (i == 2) lt_pin = -1;  /* set (not in LTspice) */
-                        else if (i == 3) lt_pin = -1;  /* reset (not in LTspice) */
-                        else if (i == 4) lt_pin = 6;   /* out (Q at pin 6) */
-                        else lt_pin = 7;                /* Nout (!Q at pin 7) */
-                    } else if (strcmp(upper, "COUNTER") == 0) {
-                        /* d_fdiv: freq_in, freq_out (2 ports) */
-                        /* LTspice: in=pin0, out=pin6 */
-                        if (i == 0) lt_pin = 0;       /* freq_in */
-                        else lt_pin = 6;               /* freq_out */
-                    } else if (strcmp(upper, "SAMPLEHOLD") == 0) {
-                        /* a_samplehold: in, clk, out (3 ports) */
-                        /* LTspice: in=pin0, clk=pin2, out=pin6 */
-                        if (i == 0) lt_pin = 0;       /* in */
-                        else if (i == 1) lt_pin = 2;   /* clk */
-                        else lt_pin = 6;                /* out */
-                    } else if (strcmp(upper, "VARISTOR") == 0) {
-                        /* a_varistor: in+, in-, out+, out- (4 ports) */
-                        /* LTspice: in+=pin0, in-=pin1, out+=pin2, out-=pin3 */
-                        if (i == 0) lt_pin = 0;       /* in+ */
-                        else if (i == 1) lt_pin = 1;   /* in- */
-                        else if (i == 2) lt_pin = 2;   /* out+ */
-                        else lt_pin = 3;                /* out- */
-                    } else {
-                        lt_pin = ltspice_pin_index(devtype, i);
-                    }
-
-                    /* Determine the node string for this port */
-                    char *port_val = NULL;
-                    if (bridge_map_done && port_bridge[i]) {
-                        port_val = port_bridge[i];
-                    } else if (lt_pin >= 0 && lt_pin < 8) {
-                        if (bridge_node[lt_pin])
-                            port_val = bridge_node[lt_pin];
-                        else if (pins[lt_pin])
-                            port_val = pins[lt_pin];
-                        else
-                            port_val = "0";
-                    } else {
-                        port_val = "0";
-                    }
-
-                    /* For vectorized gates, inputs go in [], output after */
-                    if (use_vector && i == pin_count - 1) {
-                        strcat(node_str, "] ");
-                        strcat(node_str, port_val);
-                    } else if (i > 0) {
-                        strcat(node_str, " ");
-                        strcat(node_str, port_val);
-                    } else {
-                        strcat(node_str, port_val);
+                    if (!keep && bridge_dir[lt] != 0) {
+                        bridge_dir[lt] = 0;
+                        tfree(bridge_node[lt]); bridge_node[lt] = NULL;
+                        tfree(analog_node[lt]); analog_node[lt] = NULL;
                     }
                 }
+                out_count = (bridge_dir[6] == 2) ? 1 : 0;
+                in_count = 0;
+                if (pins[7] && !is_gnd_node(pins[7]))
+                    adc_nq_pos = 7;
+            }
 
-                /* Create model name: a<instance>_<type> */
-                char model_name[256];
-                snprintf(model_name, sizeof(model_name), "a%s_%s", instname + 1, ngspice_type);
+            /* Build model card */
+            char model_name[256];
+            snprintf(model_name, sizeof(model_name), "a%s_%s", instname + 1, ng_type);
+            char model_line[512];
+            if (strcmp(upper, "SCHMITT") == 0 || strcmp(upper, "SCHMITT_BUF") == 0) {
+                double vt_val = iparams.has_vt ? iparams.vt : 2.5;
+                double vh_val = iparams.has_vh ? iparams.vh : 0.001;
+                double in_low = vt_val - vh_val / 2.0;
+                double in_high = vt_val + vh_val / 2.0;
+                snprintf(model_line, sizeof(model_line),
+                         ".model %s adc_bridge(in_low=%.15g in_high=%.15g)",
+                         model_name, in_low, in_high);
+            } else if (strcmp(upper, "COUNTER") == 0 && iparams.has_cycles) {
+                snprintf(model_line, sizeof(model_line),
+                         ".model %s d_fdiv(div_factor=%d, high_cycles=%.15g)",
+                         model_name, (int)(2 * iparams.cycles), iparams.cycles);
+            } else if (strcmp(upper, "SRFLOP") == 0 || strcmp(upper, "SRFF") == 0 || strcmp(upper, "SR_FF") == 0) {
+                snprintf(model_line, sizeof(model_line), ".model %s %s (ic=1)", model_name, ng_type);
+            } else {
+                snprintf(model_line, sizeof(model_line), ".model %s %s ()", model_name, ng_type);
+            }
+            struct card *insert_pos = card;
+            insert_pos = insert_new_line(insert_pos, copy(model_line), card->linenum, card->linenum_orig, card->linesource);
 
-                new_line = tprintf("%s %s %s", instname, node_str, model_name);
-
-                /* Special handling for specific devices */
-                if (strcmp(upper, "DLATCH") == 0 || strcmp(upper, "D_LATCH") == 0) {
-                    /* XSPICE d_dlatch: data enable set reset out Nout */
-                    new_line = tprintf("%s %s %s NULL NULL %s %s %s",
-                             instname,
-                             bridge_node[0] ? bridge_node[0] : pins[0],
-                             bridge_node[1] ? bridge_node[1] : pins[1],
-                             bridge_node[6] ? bridge_node[6] : pins[6],
-                             bridge_node[7] ? bridge_node[7] : pins[7],
-                             model_name);
+            /* SCHMITT comparator: generate B-source for V(pin0)-V(pin1) */
+            bool need_diff = false;
+            char diff_node[64] = "";
+            if ((strcmp(upper, "SCHMITT") == 0 || strcmp(upper, "SCHMITT_BUF") == 0) && pin_count == 2) {
+                if (pins[0] && pins[1] && !is_gnd_node(pins[0]) &&
+                    !is_gnd_node(pins[1]) && strcmp(pins[0], pins[1]) != 0) {
+                    need_diff = true;
+                    snprintf(diff_node, sizeof(diff_node), "_%s_diff", instname);
+                    char bsource[512];
+                    snprintf(bsource, sizeof(bsource), "B%s_diff %s 0 V=V(%s)-V(%s)",
+                             instname, diff_node, pins[0], pins[1]);
+                    insert_pos = insert_new_line(insert_pos, copy(bsource),
+                                                  card->linenum, card->linenum_orig, card->linesource);
                 }
-                else if (strcmp(upper, "TRISTATE") == 0) {
-                    /* XSPICE d_tristate: in enable out */
-                    new_line = tprintf("%s %s %s %s %s",
-                             instname,
-                             bridge_node[0] ? bridge_node[0] : pins[0],
-                             bridge_node[1] ? bridge_node[1] : pins[1],
-                             bridge_node[6] ? bridge_node[6] : pins[6],
-                             model_name);
-                }
+            }
 
-                /* Replace the original line */
-                tfree(card->line);
-                card->line = new_line;
-                /* Insert explicit bridge cards when inline params are present */
+            /* d_srlatch has 7 ports: S(0), R(1), enable(2), aset(3), areset(4), Q(5), /Q(6).
+             * Enable must be ONE for S/R to take effect. LTspice SRFLOP is set-dominant
+             * (S=1,R=1→Q=1), while d_srlatch is reset-dominant. Fix both issues:
+             * - Inject 5V on the enable pin
+             * - Force R to 0 when S is active for set-dominant behavior */
+            bool srflop_set_dominant = (strcmp(upper, "SRFLOP") == 0 ||
+                                        strcmp(upper, "SRFF") == 0 ||
+                                        strcmp(upper, "SR_FF") == 0);
+            char sr_r_fix[64] = "", sr_en_node[64] = "";
+            if (srflop_set_dominant && pins[0] && pins[1]) {
+                /* Enable: 5V pull-up */
+                snprintf(sr_en_node, sizeof(sr_en_node), "_%s_en", instname);
+                char en_bs[512];
+                snprintf(en_bs, sizeof(en_bs), "B%s_en %s 0 V=5", instname, sr_en_node);
+                insert_pos = insert_new_line(insert_pos, copy(en_bs),
+                                              card->linenum, card->linenum_orig, card->linesource);
+                /* Set-dominant: R' = S ? 0 : R */
+                snprintf(sr_r_fix, sizeof(sr_r_fix), "_%s_rfix", instname);
+                char fix_bs[512];
+                snprintf(fix_bs, sizeof(fix_bs), "B%s_srfix %s 0 V=V(%s)*(V(%s)<2.5)",
+                         instname, sr_r_fix, pins[1], pins[0]);
+                insert_pos = insert_new_line(insert_pos, copy(fix_bs),
+                                              card->linenum, card->linenum_orig, card->linesource);
+            }
+
+            /* Build node string with proper port mapping */
+            bool is_adc_bridge = (strcmp(ng_type, "adc_bridge") == 0);
+
+            int ngspice_ports = pin_count;
+            int active_inputs[6], num_active_inputs = 0;
+            int vector_out_pin = -1;
+            bool use_dynamic = false;
+            if (use_vector) {
+                use_dynamic = true;
+            } else if (dev_idx > pin_count && strcmp(ng_type, "adc_bridge") != 0) {
+                /* Device has more nodes on the line than its standard pin count.
+                 * Likely using 8-pin LTspice convention with non-standard pinout.
+                 * Use dynamic output detection to find the real output pin.
+                 * Exclude adc_bridge (SCHMITT) which uses fixed pin positions
+                 * and has its own bridge cleanup logic. */
+                use_dynamic = true;
+            }
+            if (use_dynamic) {
+                /* Determine output pin: scan from last pin backwards,
+                 * skip numeric-only subcircuit pin refs (is_gnd_node)
+                 * as well as literal "0" (global GND).
+                 * This handles non-standard pinouts where output is
+                 * on pin 5 instead of 6 (e.g. NE555.sub A4). */
+                for (int lt = dev_idx - 1; lt >= 0; lt--) {
+                    if (pins[lt] && !is_gnd_node(pins[lt])) {
+                        vector_out_pin = lt;
+                        break;
+                    }
+                }
+                if (vector_out_pin < 0)
+                    vector_out_pin = dev_idx - 1;
+                /* Build active inputs from pins before output pin,
+                 * skipping literal "0" (global GND) and NULL. */
+                for (int lt = 0; lt < vector_out_pin && lt < dev_idx; lt++) {
+                    if (!pins[lt]) continue;
+                    if (strcmp(pins[lt], "0") == 0) continue;
+                    char *pv = bridge_node[lt] ? bridge_node[lt] : pins[lt];
+                    if (pv) active_inputs[num_active_inputs++] = lt;
+                }
+                ngspice_ports = num_active_inputs + 1;
+                /* Vector gate bridge cleanup: clear DAC bridges for unused
+                 * output positions (LTspice pins 6,7 when they map to
+                 * inactive subcircuit pins like "1"). Only keep the
+                 * dynamically-detected output pin. */
                 if (do_bridge) {
-                    /* Build ADC bridge (input pins: analog -> digital) */
-                    if (in_count > 0) {
-                        char adc_an[256] = "", adc_dig[256] = "";
-                        int lt, first = 1;
-                        for (lt = 0; lt < 8; lt++) {
-                            if (bridge_dir[lt] == 1) {
-                                if (!first) { strcat(adc_an, " "); strcat(adc_dig, " "); }
-                                strcat(adc_an, analog_node[lt]);
-                                strcat(adc_dig, bridge_node[lt]);
-                                first = 0;
-                            }
+                    for (int lt = 0; lt < 8; lt++) {
+                        if (bridge_dir[lt] == 2 && lt != vector_out_pin) {
+                            bridge_dir[lt] = 0;
+                            tfree(bridge_node[lt]); bridge_node[lt] = NULL;
+                            tfree(analog_node[lt]); analog_node[lt] = NULL;
+                            out_count--;
                         }
-                        double thresh = iparams.has_ref ? iparams.ref :
-                                        (iparams.has_vt ? iparams.vt :
-                                         (iparams.vhigh + iparams.vlow) / 2.0);
-                        char adc_model[512], adc_inst[512];
-                        snprintf(adc_model, sizeof(adc_model),
-                                 ".model _lt_m%s_adc adc_bridge(in_low = %.15g in_high = %.15g)",
-                                 instname, thresh, thresh);
-                        snprintf(adc_inst, sizeof(adc_inst),
-                                 "a_lt%s_adc [ %s ] [ %s ] _lt_m%s_adc",
-                                 instname, adc_an, adc_dig, instname);
-                        insert_pos = insert_new_line(insert_pos, copy(adc_model), 0,
-                                                     card->linenum_orig, card->linesource);
-                        insert_pos = insert_new_line(insert_pos, copy(adc_inst), 0,
-                                                     card->linenum_orig, card->linesource);
                     }
-
-                    /* Build DAC bridge (output pins: digital -> analog) */
-                    if (out_count > 0) {
-                        char dac_dig[256] = "", dac_an[256] = "";
-                        int lt, first = 1;
-                        for (lt = 0; lt < 8; lt++) {
-                            if (bridge_dir[lt] == 2) {
-                                if (!first) { strcat(dac_dig, " "); strcat(dac_an, " "); }
-                                strcat(dac_dig, bridge_node[lt]);
-                                strcat(dac_an, analog_node[lt]);
-                                first = 0;
-                            }
+                }
+                /* Also clear ADC bridge entries for pins that are not active inputs */
+                if (do_bridge) {
+                    for (int lt = 0; lt < 8; lt++) {
+                        if (bridge_dir[lt] != 1) continue;
+                        bool is_active = false;
+                        for (int ai = 0; ai < num_active_inputs; ai++)
+                            if (active_inputs[ai] == lt) { is_active = true; break; }
+                        if (!is_active) {
+                            bridge_dir[lt] = 0;
+                            tfree(bridge_node[lt]); bridge_node[lt] = NULL;
+                            tfree(analog_node[lt]); analog_node[lt] = NULL;
+                            in_count--;
                         }
-                        char dac_model[512], dac_inst[512];
-                        snprintf(dac_model, sizeof(dac_model),
-                                 ".model _lt_m%s_dac dac_bridge(out_low = %.15g out_high = %.15g"
-                                 " t_rise = %.15g t_fall = %.15g)",
-                                 instname, iparams.vlow, iparams.vhigh,
-                                 iparams.trise, iparams.tfall);
-                        snprintf(dac_inst, sizeof(dac_inst),
-                                 "a_lt%s_dac [ %s ] [ %s ] _lt_m%s_dac",
-                                 instname, dac_dig, dac_an, instname);
-                        insert_pos = insert_new_line(insert_pos, copy(dac_model), 0,
-                                                     card->linenum_orig, card->linesource);
-                        insert_pos = insert_new_line(insert_pos, copy(dac_inst), 0,
-                                                     card->linenum_orig, card->linesource);
+                    }
+                }
+            } else if (strcmp(upper, "DLATCH") == 0 || strcmp(upper, "D_LATCH") == 0) ngspice_ports = 6;
+            else if (strcmp(upper, "DFF") == 0 || strcmp(upper, "D_FF") == 0 || strcmp(upper, "DFLOP") == 0) ngspice_ports = 6;
+            else if (strcmp(upper, "JKFF") == 0 || strcmp(upper, "JK_FF") == 0) ngspice_ports = 7;
+            else if (strcmp(upper, "SRFF") == 0 || strcmp(upper, "SR_FF") == 0 || strcmp(upper, "SRFLOP") == 0) ngspice_ports = 7;
+            else if (strcmp(upper, "COUNTER") == 0) ngspice_ports = 2;
+            else if (strcmp(upper, "SRLATCH") == 0 || strcmp(upper, "SR_LATCH") == 0) ngspice_ports = 7;
+            else if (strcmp(upper, "SAMPLEHOLD") == 0) ngspice_ports = 3;
+            else if (strcmp(upper, "VARISTOR") == 0) ngspice_ports = 4;
+            else if (strcmp(upper, "MODULATOR") == 0) ngspice_ports = 4;
+
+            char node_str[1024] = "";
+            if (use_vector) strcat(node_str, "[");
+
+            /* Build port→bridge mapping for vector gates */
+            char *port_bridge[8] = {NULL};
+            int bridge_input_idx = 0, bridge_output_idx = 0;
+            bool bridge_map_done = false;
+            if (do_bridge && use_dynamic) {
+                for (int lt = 0; lt < 8; lt++) {
+                    if (bridge_dir[lt] == 1 && bridge_input_idx < pin_count - 1)
+                        port_bridge[bridge_input_idx++] = bridge_node[lt];
+                    else if (bridge_dir[lt] == 2 && bridge_output_idx < 2)
+                        port_bridge[pin_count - 1 + bridge_output_idx++] = bridge_node[lt];
+                }
+                bridge_map_done = true;
+            }
+
+            for (int i = 0; i < ngspice_ports; i++) {
+                int lt_pin;
+                /* Specific device pin mapping */
+                if (strcmp(upper, "DLATCH") == 0 || strcmp(upper, "D_LATCH") == 0) {
+                    if (i == 0) lt_pin = 0;
+                    else if (i == 1) lt_pin = 1;
+                    else if (i == 2 || i == 3) lt_pin = -1;
+                    else if (i == 4) lt_pin = 6;
+                    else lt_pin = 7;
+                } else if (strcmp(upper, "DFF") == 0 || strcmp(upper, "D_FF") == 0 || strcmp(upper, "DFLOP") == 0) {
+                    if (i == 0) lt_pin = 0;
+                    else if (i == 1) lt_pin = 1;
+                    else if (i == 2 || i == 3) lt_pin = -1;
+                    else if (i == 4) lt_pin = 6;
+                    else lt_pin = 7;
+                } else if (strcmp(upper, "JKFF") == 0 || strcmp(upper, "JK_FF") == 0) {
+                    if (i == 0) lt_pin = 0;
+                    else if (i == 1) lt_pin = 1;
+                    else if (i == 2) lt_pin = 2;
+                    else if (i == 3 || i == 4) lt_pin = -1;
+                    else if (i == 5) lt_pin = 6;
+                    else lt_pin = 7;
+                } else if (strcmp(upper, "SRFF") == 0 || strcmp(upper, "SR_FF") == 0 || strcmp(upper, "SRFLOP") == 0) {
+                    if (i == 0) lt_pin = 0;
+                    else if (i == 1) lt_pin = 1;
+                    else if (i == 2) lt_pin = -1;
+                    else if (i == 3 || i == 4) lt_pin = -1;
+                    else if (i == 5) lt_pin = 6;
+                    else lt_pin = 7;
+                } else if (strcmp(upper, "SRLATCH") == 0 || strcmp(upper, "SR_LATCH") == 0) {
+                    if (i == 0) lt_pin = 0;
+                    else if (i == 1) lt_pin = 1;
+                    else if (i == 2) lt_pin = -1;
+                    else if (i == 3 || i == 4) lt_pin = -1;
+                    else if (i == 5) lt_pin = 6;
+                    else lt_pin = 7;
+                } else if (strcmp(upper, "TFF") == 0 || strcmp(upper, "T_FF") == 0) {
+                    if (i == 0) lt_pin = 0;
+                    else if (i == 1) lt_pin = 1;
+                    else if (i == 2 || i == 3) lt_pin = -1;
+                    else if (i == 4) lt_pin = 6;
+                    else lt_pin = 7;
+                } else if (strcmp(upper, "COUNTER") == 0) {
+                    if (i == 0) lt_pin = 0;
+                    else lt_pin = 6;
+                } else if (strcmp(upper, "SAMPLEHOLD") == 0) {
+                    if (i == 0) lt_pin = 0;
+                    else if (i == 1) lt_pin = 2;
+                    else lt_pin = 6;
+                } else if (strcmp(upper, "VARISTOR") == 0) {
+                    if (i == 0) lt_pin = 0;
+                    else if (i == 1) lt_pin = 1;
+                    else if (i == 2) lt_pin = 2;
+                    else lt_pin = 3;
+                } else if (strcmp(upper, "MODULATOR") == 0) {
+                    if (i == 0) lt_pin = 0;
+                    else if (i == 1) lt_pin = 1;
+                    else if (i == 2) lt_pin = 6;
+                    else lt_pin = 7;
+                } else if (use_vector) {
+                    if (i < ngspice_ports - 1)
+                        lt_pin = active_inputs[i];
+                    else
+                        lt_pin = vector_out_pin;
+                } else if (use_dynamic) {
+                    if (i < ngspice_ports - 1)
+                        lt_pin = active_inputs[i];
+                    else
+                        lt_pin = vector_out_pin;
+                } else {
+                    lt_pin = ltspice_pin_index(upper, i);
+                    /* Dynamic pin detection for 2-pin digital devices.
+                     * Some subcircuits (e.g. MIC4606-1) use non-standard
+                     * pin assignments where Q output appears at a position
+                     * other than 6. Scan all pins: first non-"0" = input,
+                     * second non-"0" after input = Q output. */
+                    if (pin_count == 2 && !use_vector &&
+                        (strcmp(upper, "SCHMITT") == 0 || strcmp(upper, "SCHMITT_BUF") == 0 ||
+                         strcmp(upper, "BUF") == 0 || strcmp(upper, "BUFFER") == 0 ||
+                         strcmp(upper, "NOT") == 0 || strcmp(upper, "INV") == 0 ||
+                         strcmp(upper, "INVERTER") == 0)) {
+                        int nongnd_pos[8], nn = 0;
+                for (int pi = 0; pi < dev_idx; pi++) {
+                    if (pins[pi] && !is_gnd_node(pins[pi]))
+                        nongnd_pos[nn++] = pi;
+                }
+                        if (nn >= 2) {
+                            if (i == 0) lt_pin = nongnd_pos[0];  /* input */
+                            else lt_pin = nongnd_pos[1];         /* Q */
+                        }
                     }
                 }
 
-                /* Add .model card if not already present */
-                if (!find_a_model(modelsfound, model_name, "top")) {
-                    /* Generate default model parameters based on device type */
-                    char model_line[512];
-                    const char *upper = devtype;
-                    char buf[64];
-                    int j;
-                    for (j = 0; j < (int)strlen(devtype) && j < 63; j++)
-                        buf[j] = toupper_c(devtype[j]);
-                    buf[j] = '\0';
-                    upper = buf;
+                char *port_val = NULL;
+                if (need_diff && i == 0) {
+                    port_val = diff_node;
+                } else if (srflop_set_dominant && i == 2 && sr_en_node[0]) {
+                    port_val = sr_en_node;
+                } else if (srflop_set_dominant && i == 1 && sr_r_fix[0]) {
+                    port_val = sr_r_fix;
+                } else if (bridge_map_done && port_bridge[i]) {
+                    port_val = port_bridge[i];
+                } else if (lt_pin >= 0 && lt_pin < 8) {
+                    if (bridge_node[lt_pin])
+                        port_val = bridge_node[lt_pin];
+                    else if (pins[lt_pin])
+                        port_val = pins[lt_pin];
+                    else
+                        port_val = "0";
+                } else {
+                    port_val = "0";
+                }
 
-                    if (strcmp(upper, "COUNTER") == 0) {
-                        if (iparams.has_cycles) {
-                            int c = (int)iparams.cycles;
-                            snprintf(model_line, sizeof(model_line),
-                                     ".model %s d_fdiv (div_factor = %d high_cycles = %d)",
-                                     model_name, 2*c, c);
-                        } else {
-                            snprintf(model_line, sizeof(model_line),
-                                     ".model %s d_fdiv (i_count = 0)", model_name);
+                if (is_adc_bridge) {
+                    strcat(node_str, " [ ");
+                    strcat(node_str, port_val);
+                    strcat(node_str, " ]");
+                } else if (use_vector && i == ngspice_ports - 1) {
+                    strcat(node_str, "] ");
+                    strcat(node_str, port_val);
+                } else if (i > 0) {
+                    strcat(node_str, " ");
+                    strcat(node_str, port_val);
+                } else {
+                    strcat(node_str, port_val);
+                }
+            }
+
+            /* Build the complete new A-device line */
+            tfree(card->line);
+            card->line = tprintf("%s %s %s", instname, node_str, model_name);
+
+            /* Insert bridge cards */
+            if (do_bridge) {
+                if (in_count > 0) {
+                    char adc_an[256] = "", adc_dig[256] = "";
+                    int first = 1;
+                    for (int lt = 0; lt < 8; lt++) {
+                        if (bridge_dir[lt] == 1) {
+                            if (!first) { strcat(adc_an, " "); strcat(adc_dig, " "); }
+                            strcat(adc_an, analog_node[lt]);
+                            strcat(adc_dig, bridge_node[lt]);
+                            first = 0;
                         }
                     }
-                    else if (strcmp(upper, "SCHMITT") == 0 || strcmp(upper, "SCHMITT_BUF") == 0) {
-                        snprintf(model_line, sizeof(model_line),
-                                 ".model %s d_buffer ()", model_name);
+                    char buf[1024];
+                    snprintf(buf, sizeof(buf), ".model _lt_m%s_adc adc_bridge(in_low=%.15g in_high=%.15g)",
+                             instname, iparams.ref - 0.1, iparams.ref + 0.1);
+                    insert_pos = insert_new_line(insert_pos, copy(buf), card->linenum, card->linenum_orig, card->linesource);
+                    snprintf(buf, sizeof(buf), "a_lt%s_adc [ %s ] [ %s ] _lt_m%s_adc",
+                             instname, adc_an, adc_dig, instname);
+                    insert_pos = insert_new_line(insert_pos, copy(buf), card->linenum, card->linenum_orig, card->linesource);
+                }
+                if (out_count > 0) {
+                    char dac_an[256] = "", dac_dig[256] = "";
+                    int first = 1;
+                    for (int lt = 0; lt < 8; lt++) {
+                        if (bridge_dir[lt] == 2) {
+                            if (!first) { strcat(dac_an, " "); strcat(dac_dig, " "); }
+                            strcat(dac_an, analog_node[lt]);
+                            strcat(dac_dig, bridge_node[lt]);
+                            first = 0;
+                        }
                     }
-                    else if (strcmp(upper, "BUF") == 0 || strcmp(upper, "BUFFER") == 0) {
-                        snprintf(model_line, sizeof(model_line),
-                                 ".model %s d_buffer ()", model_name);
-                    }
-                    else if (strcmp(upper, "NOT") == 0 || strcmp(upper, "INV") == 0 || strcmp(upper, "INVERTER") == 0) {
-                        snprintf(model_line, sizeof(model_line),
-                                 ".model %s d_inverter ()", model_name);
-                    }
-                    else if (strcmp(upper, "AND") == 0) {
-                        snprintf(model_line, sizeof(model_line),
-                                 ".model %s d_and ()", model_name);
-                    }
-                    else if (strcmp(upper, "OR") == 0) {
-                        snprintf(model_line, sizeof(model_line),
-                                 ".model %s d_or ()", model_name);
-                    }
-                    else if (strcmp(upper, "NAND") == 0) {
-                        snprintf(model_line, sizeof(model_line),
-                                 ".model %s d_nand ()", model_name);
-                    }
-                    else if (strcmp(upper, "NOR") == 0) {
-                        snprintf(model_line, sizeof(model_line),
-                                 ".model %s d_nor ()", model_name);
-                    }
-                    else if (strcmp(upper, "XOR") == 0) {
-                        snprintf(model_line, sizeof(model_line),
-                                 ".model %s d_xor ()", model_name);
-                    }
-                    else if (strcmp(upper, "XNOR") == 0) {
-                        snprintf(model_line, sizeof(model_line),
-                                 ".model %s d_xnor ()", model_name);
-                    }
-                    else if (strcmp(upper, "DFF") == 0 || strcmp(upper, "D_FF") == 0 || strcmp(upper, "DFLOP") == 0) {
-                        snprintf(model_line, sizeof(model_line),
-                                 ".model %s d_dff ()", model_name);
-                    }
-                    else if (strcmp(upper, "JKFF") == 0 || strcmp(upper, "JK_FF") == 0) {
-                        snprintf(model_line, sizeof(model_line),
-                                 ".model %s d_jkff ()", model_name);
-                    }
-                    else if (strcmp(upper, "SRFF") == 0 || strcmp(upper, "SR_FF") == 0 || strcmp(upper, "SRFLOP") == 0) {
-                        snprintf(model_line, sizeof(model_line),
-                                 ".model %s d_srff ()", model_name);
-                    }
-                    else if (strcmp(upper, "DLATCH") == 0 || strcmp(upper, "D_LATCH") == 0) {
-                        snprintf(model_line, sizeof(model_line),
-                                 ".model %s d_dlatch ()", model_name);
-                    }
-                    else if (strcmp(upper, "SRLATCH") == 0 || strcmp(upper, "SR_LATCH") == 0) {
-                        snprintf(model_line, sizeof(model_line),
-                                 ".model %s d_srlatch ()", model_name);
-                    }
-                    else if (strcmp(upper, "TFF") == 0 || strcmp(upper, "T_FF") == 0) {
-                        snprintf(model_line, sizeof(model_line),
-                                 ".model %s d_tff ()", model_name);
-                    }
-                    else if (strcmp(upper, "PHASEDET") == 0 || strcmp(upper, "PHIDET") == 0) {
-                        snprintf(model_line, sizeof(model_line),
-                                 ".model %s d_phasedet ()", model_name);
-                    }
-                    else if (strcmp(upper, "MODULATOR") == 0) {
-                        double mk = iparams.has_mark ? iparams.mark : 1e6;
-                        double sp = iparams.has_space ? iparams.space : 5e5;
-                        snprintf(model_line, sizeof(model_line),
-                                 ".model %s modulator(mark=%.15g space=%.15g)",
-                                 model_name, mk, sp);
-                    }
-                    else if (strcmp(upper, "SAMPLEHOLD") == 0) {
-                        double thresh = iparams.has_vt ? iparams.vt : 2.5;
-                        double hv = iparams.has_vhigh ? iparams.vhigh : 5.0;
-                        double lv = iparams.has_vlow ? iparams.vlow : 0.0;
-                        snprintf(model_line, sizeof(model_line),
-                                 ".model %s samplehold(vt=%.15g vhigh=%.15g vlow=%.15g)",
-                                 model_name, thresh, hv, lv);
-                    }
-                    else if (strcmp(upper, "VARISTOR") == 0) {
-                        double vr = iparams.has_vref ? iparams.vref : 1.0;
-                        double ro = iparams.has_roff ? iparams.roff : 1e12;
-                        double rc = iparams.has_rclamp ? iparams.rclamp : 1.0;
-                        snprintf(model_line, sizeof(model_line),
-                                 ".model %s varistor(vref=%.15g roff=%.15g rclamp=%.15g)",
-                                 model_name, vr, ro, rc);
-                    }
-                    else {
-                        /* Fallback: generic buffer */
-                        snprintf(model_line, sizeof(model_line),
-                                 ".model %s d_buffer ()", model_name);
-                    }
+                    char buf[1024];
+                    double out_low = iparams.has_vlow ? iparams.vlow : 0.0;
+                    double out_high = iparams.has_vhigh ? iparams.vhigh
+                                     : (iparams.has_vlow ? 1.0 : 5.0);
+                    double tr = iparams.has_trise ? iparams.trise : 1e-9;
+                    double tf = iparams.has_tfall ? iparams.tfall : 1e-9;
+                    snprintf(buf, sizeof(buf),
+                             ".model _lt_m%s_dac dac_bridge(out_low=%.15g out_high=%.15g "
+                             "out_undef=%.15g t_rise=%.15g t_fall=%.15g)",
+                             instname, out_low, out_high, out_high, tr, tf);
+                    insert_pos = insert_new_line(insert_pos, copy(buf), card->linenum, card->linenum_orig, card->linesource);
+                    snprintf(buf, sizeof(buf), "a_lt%s_dac [ %s ] [ %s ] _lt_m%s_dac",
+                             instname, dac_dig, dac_an, instname);
+                    insert_pos = insert_new_line(insert_pos, copy(buf), card->linenum, card->linenum_orig, card->linesource);
+                }
+            }
 
-                    if (from_model_card && model_card_ptr) {
-                        /* Replace user's .model card in-place */
-                        tfree(model_card_ptr->line);
-                        model_card_ptr->line = copy(model_line);
-                    } else {
-                        /* Insert model card after bridges (or after A-device line if no bridges) */
-                        card = insert_new_line(insert_pos, copy(model_line), 0,
-                                              card->linenum_orig, card->linesource);
-                    }
-                } else {
-                    if (do_bridge) card = insert_pos;
+            /* For adc_bridge (SCHMITT) with active /Q node on LTspice pin 7:
+             * generate B-source inverter: V(/Q) = vlow+vhigh - V(Q) where Q is on pin 6. */
+            if (strcmp(ng_type, "adc_bridge") == 0 && adc_nq_pos >= 0) {
+                char *nq_node = pins[7];
+                char *q_node = pins[6];
+                if (nq_node && !is_gnd_node(nq_node) &&
+                    q_node && !is_gnd_node(q_node)) {
+                    double out_low = iparams.has_vlow ? iparams.vlow : 0.0;
+                    double out_high = iparams.has_vhigh ? iparams.vhigh : 5.0;
+                    double sum = out_low + out_high;
+                    char inv_bs[512];
+                    snprintf(inv_bs, sizeof(inv_bs),
+                             "B%s_nq %s 0 V=%.15g - V(%s)",
+                             instname, nq_node, sum, q_node);
+                    insert_pos = insert_new_line(insert_pos, copy(inv_bs),
+                                                  card->linenum, card->linenum_orig, card->linesource);
                 }
             }
 
             /* Cleanup */
+            for (int fi = 0; fi < dev_idx; fi++) tfree(toks[fi]);
+            tfree(toks[dev_idx]);
+            for (int bi = 0; bi < 8; bi++) { tfree(bridge_node[bi]); tfree(analog_node[bi]); }
+            tfree(upper);
             tfree(instname);
-            tfree(model_card_params);
-            for (i = 0; i < 8 && pins[i]; i++) tfree(pins[i]);
-            for (i = 0; i < 8; i++) {
-                if (bridge_node[i]) tfree(bridge_node[i]);
-                if (analog_node[i]) tfree(analog_node[i]);
-            }
-            tfree(devtype);
             tfree(linecopy);
+            tfree(model_card_params);
+            prev_card = card;
+            card = card->nextcard;
+            continue;
         }
+        prev_card = card;
+        card = card->nextcard;
     }
 
-    del_models(modelsfound);
+    /* Cleanup model registration */
+    while (modelsfound) {
+        struct vsmodels *next = modelsfound->nextmodel;
+        tfree(modelsfound->modelname);
+        tfree(modelsfound->modeltype);
+        tfree(modelsfound->params);
+        tfree(modelsfound);
+        modelsfound = next;
+    }
 }
