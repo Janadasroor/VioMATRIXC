@@ -1483,9 +1483,21 @@ static struct inp_read_t inp_read(FILE* fp, int call_depth, const char* dir_name
                  */
                 char* after = skip_ws(buffer + 4);
                 if (*after) {
-                    char* rest = skip_ws(skip_non_ws(after));
+                    /* Find end of first argument, handling quoted strings */
+                    char* end = after;
+                    if (*end == '"' || *end == '\'') {
+                        char quote = *end;
+                        end++;
+                        while (*end && *end != quote) end++;
+                        if (*end) end++; /* skip closing quote */
+                    } else {
+                        while (*end && !isspace_c(*end) && *end != '(' &&
+                               *end != '\n' && *end != '\r' && *end != '#')
+                            end++;
+                    }
+                    char* rest = skip_ws(end);
                     /* Has a second non-whitespace token → .lib <file> <section> */
-                    if (*rest && *rest != '(' && *rest != '\n' && *rest != '\r' && *rest != '#') {
+                    if (*rest && *rest != '\n' && *rest != '\r' && *rest != '#') {
                         ; /* keep as .lib */
                     } else {
                         /* single arg, old-style .lib <file> or .lib <section> */
@@ -3937,8 +3949,17 @@ static struct card *expand_section_ref(struct card *c, const char *dir_name)
     s = skip_non_ws(line);
     while (isspace_c(*s) || isquote(*s))
         s++;
-    for (s_e = s; *s_e && !isspace_c(*s_e) && !isquote(*s_e); s_e++)
-        ;
+    /* Handle quoted filenames with embedded spaces */
+    if (*s == '"' || *s == '\'') {
+        char quote = *s;
+        s++; /* skip opening quote */
+        for (s_e = s; *s_e && *s_e != quote; s_e++)
+            ;
+        if (*s_e) s_e++; /* skip closing quote */
+    } else {
+        for (s_e = s; *s_e && !isspace_c(*s_e) && !isquote(*s_e); s_e++)
+            ;
+    }
     y = s_e;
     while (isspace_c(*y) || isquote(*y))
         y++;

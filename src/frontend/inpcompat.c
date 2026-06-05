@@ -3825,6 +3825,8 @@ struct card *ltspice_compat(struct card *oldcard)
     nextcard = insert_new_line(nextcard, new_str, 11, 0, "internal");
     new_str = copy(".func stp(x) { u(x) }");
     nextcard = insert_new_line(nextcard, new_str, 12, 0, "internal");
+    new_str = copy(".func inv(x) { (!(x)) }");
+    nextcard = insert_new_line(nextcard, new_str, 13, 0, "internal");
     new_str = copy(".func if(a, b, c) {ternary_fcn( a , b , c )}");
     nextcard = insert_new_line(nextcard, new_str, 13, 0, "internal");
     new_str = copy(".func int(x) { sgn(x)*floor(abs(x)) }");
