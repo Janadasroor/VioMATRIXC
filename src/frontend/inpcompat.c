@@ -1159,6 +1159,38 @@ struct card *pspice_compat(struct card *oldcard)
         }
     }
 
+    /* replace # in subcircuit names with _ (LTspice allows #, ngspice
+       treats it as hierarchy separator, e.g. LIM33262#0 → LIM33262_0) */
+    {
+        int skip_control_hash = 0;
+        for (card = newcard; card; card = card->nextcard) {
+            char *cut_line = card->line;
+            if (*cut_line == '*')
+                continue;
+            if (ciprefix(".control", cut_line)) { skip_control_hash++; continue; }
+            if (ciprefix(".endc", cut_line)) { skip_control_hash--; continue; }
+            if (skip_control_hash > 0) continue;
+            char *p = cut_line;
+            while ((p = strchr(p, '#')) != NULL) {
+                /* Check context: ensure # is within an identifier token
+                   (preceded by alnum and followed by alnum or end-of-token) */
+                if (p > cut_line && isalnum_c(p[-1])) {
+                    int has_trailing = 0;
+                    char *q = p + 1;
+                    while (*q && !isspace_c(*q) && *q != '(' && *q != ')' &&
+                           *q != ',' && *q != '\n' && *q != '\r') {
+                        if (isalnum_c(*q) || *q == '_') has_trailing = 1;
+                        q++;
+                    }
+                    if (has_trailing) {
+                        *p = '_';
+                    }
+                }
+                p++;
+            }
+        }
+    }
+
     /* replace & with && , | with || , *# with * # , and ~ with ! */
     for (card = newcard; card; card = card->nextcard) {
         char *t;
@@ -2219,6 +2251,32 @@ struct card *ltspice_compat(struct card *oldcard)
             *dst = '\0';
             tfree(card->line);
             card->line = result;
+        }
+    }
+
+    /* replace # in subcircuit names with _ (LTspice allows # in identifiers,
+       ngspice treats # as hierarchy separator, e.g. LIM33262#0 → LIM33262_0) */
+    for (card = oldcard; card; card = card->nextcard) {
+        char *cut_line = card->line;
+        if (!cut_line) continue;
+        if (*cut_line == '*') continue;
+        char *p = cut_line;
+        while ((p = strchr(p, '#')) != NULL) {
+            /* Check context: ensure # is within an identifier token
+               (preceded by alnum and followed by alnum or underscore) */
+            if (p > cut_line && isalnum_c((unsigned char)p[-1])) {
+                int has_trailing = 0;
+                char *q = p + 1;
+                while (*q && !isspace_c(*q) && *q != '(' && *q != ')' &&
+                       *q != ',' && *q != '\n' && *q != '\r') {
+                    if (isalnum_c((unsigned char)*q) || *q == '_') has_trailing = 1;
+                    q++;
+                }
+                if (has_trailing) {
+                    *p = '_';
+                }
+            }
+            p++;
         }
     }
 
