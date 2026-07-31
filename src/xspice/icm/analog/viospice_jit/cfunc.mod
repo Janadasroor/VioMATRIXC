@@ -34,6 +34,9 @@ static void* viospice_jit_lookup_v2(const char* block_id) {
 }
 #else
 #include <dlfcn.h>
+#ifndef RTLD_DEFAULT
+#define RTLD_DEFAULT ((void *) 0)
+#endif
 static void* viospice_jit_lookup(const char* block_id) {
     static void* (*real_lookup)(const char*) = NULL;
     if (!real_lookup) {
