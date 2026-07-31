@@ -1,3 +1,9 @@
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+#ifndef _WIN32
+#include <dlfcn.h>
+#endif
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
@@ -73,8 +79,10 @@ void cm_viospice_jit_block(ARGS) {
         jit_v2_func(block_id, TIME, (const double*)inputs, &base_output, jacobian);
         
         OUTPUT(out) = base_output;
-        for (i = 0; i < size; i++) {
-            PARTIAL(out, in[i]) = jacobian[i];
+        if (mif_private->conn[1]->port[0]->partial && mif_private->conn[1]->port[0]->partial[0].port) {
+            for (i = 0; i < size; i++) {
+                PARTIAL(out, in[i]) = jacobian[i];
+            }
         }
         return;
     }
@@ -86,20 +94,24 @@ void cm_viospice_jit_block(ARGS) {
         base_output = jit_func(TIME, (const double*)inputs);
         OUTPUT(out) = base_output;
 
-        for (i = 0; i < size; i++) {
-            double saved = inputs[i];
-            double delta = 1e-6 * fmax(1.0, fabs(saved));
-            double perturbed_output;
+        if (mif_private->conn[1]->port[0]->partial && mif_private->conn[1]->port[0]->partial[0].port) {
+            for (i = 0; i < size; i++) {
+                double saved = inputs[i];
+                double delta = 1e-6 * fmax(1.0, fabs(saved));
+                double perturbed_output;
 
-            inputs[i] = saved + delta;
-            perturbed_output = jit_func(TIME, (const double*)inputs);
-            PARTIAL(out, in[i]) = (perturbed_output - base_output) / delta;
-            inputs[i] = saved;
+                inputs[i] = saved + delta;
+                perturbed_output = jit_func(TIME, (const double*)inputs);
+                PARTIAL(out, in[i]) = (perturbed_output - base_output) / delta;
+                inputs[i] = saved;
+            }
         }
     } else {
         OUTPUT(out) = 0.0;
-        for (i = 0; i < size; i++) {
-            PARTIAL(out, in[i]) = 0.0;
+        if (mif_private->conn[1]->port[0]->partial && mif_private->conn[1]->port[0]->partial[0].port) {
+            for (i = 0; i < size; i++) {
+                PARTIAL(out, in[i]) = 0.0;
+            }
         }
     }
 }

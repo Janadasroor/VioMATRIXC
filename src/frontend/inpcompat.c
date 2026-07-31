@@ -2280,6 +2280,26 @@ struct card *ltspice_compat(struct card *oldcard)
         }
     }
 
+    /* strip LTspice 'noiseless' keyword from element lines
+       (ngspice does not recognize it on R/L/C or other elements).
+       Skip .model cards (handled separately in ltspice_compat_a). */
+    for (card = oldcard; card; card = card->nextcard) {
+        char *cl = card->line;
+        if (!cl) continue;
+        if (ciprefix(".model", cl) || ciprefix(".MODEL", cl)) continue;
+        if (*cl == '*') continue;
+        char *p = cl;
+        while ((p = strstr(p, "noiseless")) != NULL) {
+            if ((p == cl || isspace_c((unsigned char)p[-1]) || p[-1] == ',' ||
+                 p[-1] == '(' || p[-1] == ')') &&
+                (p[9] == '\0' || isspace_c((unsigned char)p[9]) || p[9] == ',' ||
+                 p[9] == ')' || p[9] == '\n' || p[9] == '\r')) {
+                memmove(p, p + 9, strlen(p + 9) + 1);
+            }
+            p += 9;
+        }
+    }
+
     /* Uncomment *param lines and inject case-variant aliases.
      * LTspice authors sometimes comment out .param lines (*param vcc=5...)
      * because LTspice resolves parameters case-insensitively. ngspice needs
