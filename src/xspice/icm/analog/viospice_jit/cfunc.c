@@ -1,6 +1,9 @@
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif
+#ifndef _WIN32
+#include <dlfcn.h>
+#endif
 #include "ngspice/cm.h"
 extern void cm_viospice_jit_block(Mif_Private_t *);
 #include <stdlib.h>
