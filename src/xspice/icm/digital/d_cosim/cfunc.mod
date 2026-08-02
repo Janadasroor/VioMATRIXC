@@ -8,6 +8,18 @@
 #include <string.h>
 #include <stdbool.h>
 
+/* ABI tag used by the host app to verify that this d_cosim codemodel was
+ * built from the SAME VioMATRIXC tree as the libngspice engine it links.
+ * digital.cm and libngspice.so.0 must match; a mismatched pair (e.g. one
+ * from the dev tree and one from the release tree) crashes in CKTdump.
+ * Keep in sync with VIOMATRIXC_CM_ABI_TAG in viospice's
+ * simulation_manager.cpp. */
+__attribute__((visibility("default")))
+const char* vio_cosim_abi_tag(void)
+{
+    return "viospice-cm-abi-v1";
+}
+
 #if defined (__MINGW32__) || defined (__CYGWIN__) || defined (_MSC_VER)
 /* MS WINDOWS. */
 #undef BOOLEAN
