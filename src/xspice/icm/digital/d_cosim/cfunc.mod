@@ -13,9 +13,18 @@
  * digital.cm and libngspice.so.0 must match; a mismatched pair (e.g. one
  * from the dev tree and one from the release tree) crashes in CKTdump.
  * Keep in sync with VIOMATRIXC_CM_ABI_TAG in viospice's
- * simulation_manager.cpp. */
-__attribute__((visibility("default")))
-const char* vio_cosim_abi_tag(void)
+ * simulation_manager.cpp.
+ *
+ * CM_EXPORT mirrors src/xspice/icm/dlmain.c: on Windows the symbol must be
+ * __declspec(dllexport) for GetProcAddress/dlsym to resolve it; the plain
+ * visibility("default") attribute does not emit a PE export table entry. */
+#if defined (__MINGW32__) || defined (__CYGWIN__) || defined (_MSC_VER)
+#define VIO_ABI_EXPORT __declspec(dllexport)
+#else
+#define VIO_ABI_EXPORT __attribute__ ((visibility ("default")))
+#endif
+
+VIO_ABI_EXPORT const char* vio_cosim_abi_tag(void)
 {
     return "viospice-cm-abi-v1";
 }
