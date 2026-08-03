@@ -14,9 +14,6 @@ multi_input_pwl
 oneshot
 pwl
 pwlts
-varistor
-samplehold
-modulator
 sine
 slew
 square
