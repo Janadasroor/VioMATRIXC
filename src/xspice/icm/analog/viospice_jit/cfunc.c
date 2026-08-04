@@ -1,11 +1,11 @@
+#include "ngspice/cm.h"
+extern void cm_viospice_jit_block(Mif_Private_t *);
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif
 #ifndef _WIN32
 #include <dlfcn.h>
 #endif
-#include "ngspice/cm.h"
-extern void cm_viospice_jit_block(Mif_Private_t *);
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
@@ -21,7 +21,7 @@ typedef void (*viospice_jit_v2_func_t)(const char* id, double t, const double* i
 static void* viospice_jit_lookup(const char* block_id) {
     static void* (*real_lookup)(const char*) = NULL;
     if (!real_lookup) {
-        HMODULE mod = GetModuleHandleA("libngspice.dll");
+        HMODULE mod = GetModuleHandleA("libngspice-0.dll");
         if (mod) real_lookup = (void* (*)(const char*))GetProcAddress(mod, "viospice_jit_lookup");
     }
     return real_lookup ? real_lookup(block_id) : NULL;
@@ -29,7 +29,7 @@ static void* viospice_jit_lookup(const char* block_id) {
 static void* viospice_jit_lookup_v2(const char* block_id) {
     static void* (*real_lookup)(const char*) = NULL;
     if (!real_lookup) {
-        HMODULE mod = GetModuleHandleA("libngspice.dll");
+        HMODULE mod = GetModuleHandleA("libngspice-0.dll");
         if (mod) real_lookup = (void* (*)(const char*))GetProcAddress(mod, "viospice_jit_lookup_v2");
     }
     return real_lookup ? real_lookup(block_id) : NULL;

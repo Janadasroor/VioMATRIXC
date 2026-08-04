@@ -14,6 +14,11 @@
 #include <stdbool.h>
 #include <strings.h>
 
+#if defined(_WIN32) || defined(__CYGWIN__)
+  #define VIOSPICE_ENGINE_API __declspec(dllexport)
+#else
+  #define VIOSPICE_ENGINE_API __attribute__((visibility("default")))
+#endif
 
 typedef double (*viospice_jit_func_t)(double t, const double* inputs);
 typedef void (*viospice_jit_v2_func_t)(const char* block_id, double t, const double* inputs, double* output, double* jacobian);
@@ -53,7 +58,7 @@ static int jit_id_match(const char* s1, const char* s2) {
     return strcasecmp(buf1, buf2) == 0;
 }
 
-__attribute__((visibility("default")))
+VIOSPICE_ENGINE_API
 void ngSpice_RegisterJitLogic(const char* block_id, viospice_jit_func_t func_ptr) {
     JITRegistryNode* current = jit_registry_head;
     while (current != NULL) {
@@ -73,7 +78,7 @@ void ngSpice_RegisterJitLogic(const char* block_id, viospice_jit_func_t func_ptr
     }
 }
 
-__attribute__((visibility("default")))
+VIOSPICE_ENGINE_API
 void ngSpice_RegisterJitLogicV2(const char* block_id, viospice_jit_v2_func_t func_ptr) {
     JITRegistryNode* current = jit_registry_head;
     while (current != NULL) {
@@ -93,7 +98,7 @@ void ngSpice_RegisterJitLogicV2(const char* block_id, viospice_jit_v2_func_t fun
     }
 }
 
-__attribute__((visibility("default")))
+VIOSPICE_ENGINE_API
 viospice_jit_func_t viospice_jit_lookup(const char* block_id) {
     JITRegistryNode* current = jit_registry_head;
     while (current != NULL) {
@@ -105,7 +110,7 @@ viospice_jit_func_t viospice_jit_lookup(const char* block_id) {
     return NULL;
 }
 
-__attribute__((visibility("default")))
+VIOSPICE_ENGINE_API
 viospice_jit_v2_func_t viospice_jit_lookup_v2(const char* block_id) {
     JITRegistryNode* current = jit_registry_head;
     while (current != NULL) {
@@ -118,7 +123,7 @@ viospice_jit_v2_func_t viospice_jit_lookup_v2(const char* block_id) {
 }
 extern bool ft_intrpt;
 
-__attribute__((visibility("default")))
+VIOSPICE_ENGINE_API
 bool ngSpice_IsPaused(void) {
     return ft_intrpt;
 }
