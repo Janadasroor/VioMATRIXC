@@ -197,10 +197,12 @@ ccfilec(char *buf)
         lcomp = buf;
         if (*buf == cp_til) {   /* User name completion... */
             buf++;
+#ifndef __ANDROID__
             while ((pw = getpwent()) != NULL)
                 if (prefix(buf, pw->pw_name))
                     wl = wl_cons(copy(pw->pw_name), wl);
             (void) endpwent();
+#endif
             return (wl);
         }
     } else {

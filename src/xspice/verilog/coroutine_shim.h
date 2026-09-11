@@ -129,7 +129,9 @@ static void cr_cleanup(struct cr_ctx *ctx) {
      * It should be in pthread_cond_wait() and will go quickly.
      */
 
+#ifndef __ANDROID__
     pthread_cancel(ctx->thread);
+#endif
     pthread_mutex_unlock(&ctx->mutex);
     pthread_cond_signal(&ctx->cosim_cond); // Make it run
     pthread_join(ctx->thread, NULL);       // Wait for it.

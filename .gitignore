@@ -28,6 +28,8 @@ libtool
 /release/
 /releasesh/
 /test_xspice_run/
+/build_android*/
+test_555.cir
 
 # Agent scratchpad (not part of the source)
 AGENTS.md
