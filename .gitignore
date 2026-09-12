@@ -39,3 +39,6 @@ AGENTS.md
 *.raw
 *.test
 out.txt
+
+# GPL text regresses via autogen.sh (automake copies it in); the fork is Apache-2.0 (LICENSE).
+/COPYING
