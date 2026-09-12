@@ -4748,7 +4748,15 @@ void ltspice_compat_a(struct card *oldcard)
             char *pins[8] = {NULL}, *devtype = NULL;
             char *toks[16] = {NULL}; int nt = 0;
             char param_buf[1024] = "";
-            while ((toks[nt] = gettok_node(&s)) != NULL && nt < 16) nt++;
+            /* Bound check FIRST: the old order stored toks[16] past the
+             * array before testing, smashing one stack slot on every
+             * A-device line wider than 15 tokens (nondeterministic
+             * crashes past ~136 d_cosim ports). */
+            while (nt < 16 && (toks[nt] = gettok_node(&s)) != NULL) nt++;
+            /* Drain the rest (wide vectors belong to models this pass
+             * does not rewrite; the stored prefix suffices below). */
+            char *drained;
+            while ((drained = gettok_node(&s)) != NULL) tfree(drained);
             /* Find devtype (last token without '=') */
             int dev_idx = -1;
             for (int ti = nt - 1; ti >= 0; ti--) {
