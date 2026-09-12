@@ -106,8 +106,31 @@ static void gc_end(void);
 #define MIFgettok MIFgettok_gc
 #define MIFget_token MIFget_token_gc
 
-static char *alltokens[BSIZE_SP];
+/* Token garbage collector: every token minted while instantiating one
+ * A-device card is recorded here and released by gc_end (error paths
+ * and end of card). Fixed 512 slots overflowed past ~330 vector ports
+ * (heap corruption past it); the array now grows (VioMATRIXC fix). */
+static char **alltokens = NULL;
+static int alltokens_cap = 0;
 static int curtoknr = 0;
+
+static void gc_store(char *tok)
+{
+    if (curtoknr >= alltokens_cap) {
+        int newcap = alltokens_cap ? alltokens_cap * 2 : BSIZE_SP;
+        char **grown = TMALLOC(char *, newcap);
+        int i;
+        for (i = 0; i < curtoknr; i++)
+            grown[i] = alltokens[i];
+        for (; i < newcap; i++)
+            grown[i] = NULL;
+        if (alltokens)
+            tfree(alltokens);
+        alltokens = grown;
+        alltokens_cap = newcap;
+    }
+    alltokens[curtoknr++] = tok;
+}
 
 /* ********************************************************************* */
 
@@ -1026,7 +1049,7 @@ static
 char *MIFgettok_gc(char **line)
 {
     char *newtok = MIFgettok(line);
-    alltokens[curtoknr++] = newtok;
+    gc_store(newtok);
     return newtok;
 }
 
@@ -1034,7 +1057,7 @@ static
 char *MIFget_token_gc(char **s, Mif_Token_Type_t *type)
 {
     char *newtok = MIFget_token(s, type);
-    alltokens[curtoknr++] = newtok;
+    gc_store(newtok);
     return newtok;
 }
 
@@ -1042,7 +1065,11 @@ static
 void gc_start(void)
 {
     int i;
-    for (i = 0; i < BSIZE_SP; i++)
+    if (!alltokens) {
+        alltokens = TMALLOC(char *, BSIZE_SP);
+        alltokens_cap = BSIZE_SP;
+    }
+    for (i = 0; i < alltokens_cap; i++)
         alltokens[i] = NULL;
     curtoknr = 0;
 }
@@ -1051,7 +1078,7 @@ static
 void gc_end(void)
 {
     int i, j;
-    for (i = 0; i < BSIZE_SP; i++) {
+    for (i = 0; i < alltokens_cap; i++) {
         /* We have multiple entries with the same address */
         for (j = i + 1; j < curtoknr; j++)
             if (alltokens[i] == alltokens[j])
@@ -1064,6 +1091,6 @@ char *
 copy_gc(char* in)
 {
     char *newtok = copy(in);
-    alltokens[curtoknr++] = newtok;
+    gc_store(newtok);
     return newtok;
 }
