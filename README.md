@@ -52,6 +52,19 @@ make -j"$(nproc)"
 
 The helper scripts `compile_linux_vicompat.sh` and `compile_linux_shared_vicompat.sh` wrap these workflows with default flags and optional install steps.
 
+### Shared-library build for Android embedding
+
+```bash
+./compile_android.sh arm64 26    # -> build_android_arm64-v8a/src/.libs/libngspice.so
+./compile_android.sh x86_64 26   # -> build_android_x86_64/src/.libs/libngspice.so
+```
+
+The script auto-detects the Android NDK (`ANDROID_NDK_HOME`, `NDK_HOME`, or the
+SDK's `ndk/` directory). The API level (26) matches the consuming app's
+`minSdk`. Tagged releases (`v*`) publish both `libngspice-<abi>.so` binaries
+with SHA256 checksums as GitHub Release assets, built by CI — downstream apps
+should consume those pinned artifacts instead of building from source.
+
 ## Compatibility Default
 
 When configured with `--enable-vicompat`, the generated `spinit` sets:
