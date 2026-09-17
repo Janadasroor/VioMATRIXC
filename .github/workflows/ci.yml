@@ -311,6 +311,12 @@ jobs:
         with:
           packages: "ndk;${{ env.ANDROID_NDK_VERSION }}"
 
+      - name: Bootstrap
+        # Fresh checkouts give all files the same mtime, so make would try
+        # to re-run the (version-pinned) autotools that generated the
+        # committed configure script. Regenerate with the runner's toolchain.
+        run: ./autogen.sh
+
       - name: Build arm64-v8a
         run: ./compile_android.sh arm64 "$ANDROID_API"
 
