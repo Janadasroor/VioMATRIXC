@@ -1846,6 +1846,10 @@ static struct inp_read_t inp_read(FILE* fp, int call_depth, const char* dir_name
             /* no lower case letters for lines beginning with: */
             else if (!(ciprefix(".lib", buffer) || ciprefix(".inc", buffer) ||
                 strstr(buffer, "pwlfile=") || strstr(buffer, "PWLFILE=") ||
+                /* WAV audio source file paths are case-sensitive on Linux;
+                   downcasing the line would break the quoted path (same
+                   rationale as pwlfile= above). */
+                strstr(buffer, "wavefile=") || strstr(buffer, "WAVEFILE=") ||
                 ((comfile || is_control) && (
                     ciprefix("write", buffer) ||
                     ciprefix("wrdata", buffer) ||
