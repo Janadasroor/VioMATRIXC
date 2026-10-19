@@ -17,6 +17,8 @@ set num_threads=8
 unset osdi_enabled
 
 * Load the codemodels
+* (no table.cm: this tree has no table code model, see CMDIRS in
+*  src/xspice/icm/GNUmakefile.in - loading it here only produces an error)
 if $?xspice_enabled
 
 @XSPICEINIT@ codemodel @pkglibdir@/spice2poly.cm
@@ -24,7 +26,6 @@ if $?xspice_enabled
 @XSPICEINIT@ codemodel @pkglibdir@/digital.cm
 @XSPICEINIT@ codemodel @pkglibdir@/xtradev.cm
 @XSPICEINIT@ codemodel @pkglibdir@/xtraevt.cm
-@XSPICEINIT@ codemodel @pkglibdir@/table.cm
 @XSPICEINIT@ codemodel @pkglibdir@/tlines.cm
 
 end
