@@ -26,6 +26,7 @@ libtool
 
 # Local build trees used in this fork
 /release/
+.libs/
 /releasesh/
 /test_xspice_run/
 /build_android*/
@@ -43,3 +44,20 @@ out.txt
 # GPL text regresses via autogen.sh (automake copies it in); the fork is Apache-2.0 (LICENSE).
 /COPYING
 /debug_asan/
+
+# In-tree build byproducts (configure + make leaves these behind)
+Makefile
+Makefile.in
+.deps/
+config.h
+config.h.in
+config.status
+config.log
+stamp-h1
+libtool
+ngspice
+ngspice.pc
+spinit
+release/
+.libs/
+src/spinit
